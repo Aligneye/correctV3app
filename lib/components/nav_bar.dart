@@ -40,7 +40,7 @@ class ModernNavBar extends StatelessWidget {
             ),
             _NavItem(
               index: 1,
-              label: 'Arogyam',
+              label: 'Fit',
               icon: Icons.health_and_safety_rounded,
               selectedIndex: selectedIndex,
               onTap: onItemSelected,

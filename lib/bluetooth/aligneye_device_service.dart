@@ -148,7 +148,6 @@ class AlignEyeDeviceService {
   
   // Persistent storage keys
   static const String _keyHasEverConnected = 'bluetooth_has_ever_connected';
-  static const String _keyUserManuallyDisconnected = 'bluetooth_user_manually_disconnected';
 
   Stream<PostureReading> get readings => _readingController.stream;
 
@@ -295,9 +294,10 @@ class AlignEyeDeviceService {
       return;
     }
 
-    // Don't auto-connect if user manually disconnected
+    // Don't auto-connect if user manually disconnected (only during current session)
+    // Note: This flag is reset to false when app starts, so it only blocks during the same session
     if (isAutoConnect && _userInitiatedDisconnect) {
-      debugPrint('Skipping auto-connect - user manually disconnected');
+      debugPrint('CONNECT: Skipping auto-connect - user manually disconnected during this session');
       return;
     }
 
@@ -1183,56 +1183,66 @@ class AlignEyeDeviceService {
 
   /// Attempts to auto-connect to a paired device if available
   /// This should be called on app start or when appropriate
+  /// Always attempts to connect when app opens, regardless of previous connection history
   Future<void> tryAutoConnect() async {
-    // Load persistent state
+    // Reset user initiated disconnect flag on app start
+    // This ensures auto-connect always happens when app opens
+    _userInitiatedDisconnect = false;
+    debugPrint('=== AUTO-CONNECT: App started - resetting user disconnect flag, attempting auto-connect ===');
+    
+    // Load persistent state (but don't use it to block auto-connect on app start)
     await _loadConnectionState();
     
-    if (_userInitiatedDisconnect) {
-      debugPrint('Skipping auto-connect - user manually disconnected');
-      return;
-    }
+    // Note: We don't check _userInitiatedDisconnect here because we just reset it
+    // The flag will be set if user disconnects during this session
 
     if (connectionStatus.value != DeviceConnectionStatus.disconnected) {
-      debugPrint('Already connected or connecting, skipping auto-connect');
+      debugPrint('AUTO-CONNECT: Already connected or connecting, skipping auto-connect');
       return;
     }
 
-    // Check if user has ever connected before
-    final prefs = await SharedPreferences.getInstance();
-    final hasEverConnected = prefs.getBool(_keyHasEverConnected) ?? false;
+    // Wait a bit for the app to fully initialize and Bluetooth to be ready
+    await Future.delayed(const Duration(milliseconds: 500));
     
-    if (!hasEverConnected) {
-      debugPrint('Skipping auto-connect - user has never connected before (first time)');
-      return;
-    }
-
+    // Check if Bluetooth is supported
     try {
-      // Check if we have a paired device
-      final bondedDevices = await FlutterBluePlus.bondedDevices;
+      final supported = await FlutterBluePlus.isSupported;
+      if (!supported) {
+        debugPrint('AUTO-CONNECT: Bluetooth is not supported on this device');
+        return;
+      }
       
-      BluetoothDevice? pairedDevice;
-      for (final device in bondedDevices) {
-        final name = device.platformName.trim();
-        if (name.toLowerCase() == _deviceNamePrefix.toLowerCase() ||
-            name.toLowerCase().startsWith(_deviceNamePrefix.toLowerCase())) {
-          pairedDevice = device;
-          break;
-        }
+      // Check if Bluetooth adapter is ready
+      final adapterState = await FlutterBluePlus.adapterState.first.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () {
+          debugPrint('AUTO-CONNECT: Timeout waiting for Bluetooth adapter state');
+          return BluetoothAdapterState.unknown;
+        },
+      );
+      
+      if (adapterState != BluetoothAdapterState.on) {
+        debugPrint('AUTO-CONNECT: Bluetooth adapter is not ON (state: $adapterState), cannot auto-connect');
+        return;
       }
-
-      if (pairedDevice != null) {
-        debugPrint('Found paired device, attempting auto-connect...');
-        await connect(isAutoConnect: true);
-      } else {
-        debugPrint('No paired device found for auto-connect');
-      }
-    } catch (e) {
-      debugPrint('Auto-connect failed: $e');
+      
+      debugPrint('AUTO-CONNECT: Bluetooth is ready, starting connection flow...');
+      // Force reset again right before connecting to ensure session flag never blocks startup.
+      _userInitiatedDisconnect = false;
+      // Always attempt a full connect flow on app open. This can still connect via
+      // bonded device quickly, but also scans when no bonded entry is present.
+      await connect(isAutoConnect: true);
+      debugPrint('AUTO-CONNECT: Connection attempt completed');
+    } catch (e, stackTrace) {
+      debugPrint('AUTO-CONNECT: Failed with error: $e');
+      debugPrint('AUTO-CONNECT: Stack trace: $stackTrace');
       // Don't throw - auto-connect failures should be silent
     }
   }
   
   /// Save connection state to persistent storage
+  /// Note: We don't persist userManuallyDisconnected anymore
+  /// because we want auto-connect to always happen on app start
   Future<void> _saveConnectionState({
     bool? hasEverConnected,
     bool? userManuallyDisconnected,
@@ -1242,8 +1252,9 @@ class AlignEyeDeviceService {
       if (hasEverConnected != null) {
         await prefs.setBool(_keyHasEverConnected, hasEverConnected);
       }
+      // Don't persist userManuallyDisconnected - it's session-only now
+      // Just update the in-memory flag for the current session
       if (userManuallyDisconnected != null) {
-        await prefs.setBool(_keyUserManuallyDisconnected, userManuallyDisconnected);
         _userInitiatedDisconnect = userManuallyDisconnected;
       }
     } catch (e) {
@@ -1252,12 +1263,15 @@ class AlignEyeDeviceService {
   }
   
   /// Load connection state from persistent storage
+  /// Note: We don't load _userInitiatedDisconnect from storage anymore
+  /// because we want auto-connect to always happen on app start
   Future<void> _loadConnectionState() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final userManuallyDisconnected = prefs.getBool(_keyUserManuallyDisconnected) ?? false;
-      _userInitiatedDisconnect = userManuallyDisconnected;
-      debugPrint('Loaded connection state: userManuallyDisconnected=$userManuallyDisconnected');
+      // We still load hasEverConnected to know if user has connected before
+      final hasEverConnected = prefs.getBool(_keyHasEverConnected) ?? false;
+      debugPrint('Loaded connection state: hasEverConnected=$hasEverConnected');
+      // Don't load userManuallyDisconnected - it's session-only now
     } catch (e) {
       debugPrint('Error loading connection state: $e');
     }

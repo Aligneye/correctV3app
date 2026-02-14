@@ -12,19 +12,39 @@ class BluetoothServiceManager {
   Timer? _reconnectTimer;
   bool _isAutoReconnecting = false;
   bool _shouldMaintainConnection = false;
+  bool _isMonitoring = false;
+  int _autoReconnectAttempts = 0;
+
+  static const Duration _initialReconnectDelay = Duration(seconds: 2);
+  static const int _maxBackoffSeconds = 30;
 
   AlignEyeDeviceService get deviceService => _deviceService;
 
   /// Initialize and start maintaining the Bluetooth connection
   Future<void> initialize() async {
+    debugPrint('=== BluetoothServiceManager: Initializing ===');
     _shouldMaintainConnection = true;
     _startConnectionMonitoring();
     
-    // Try auto-connect only if user has connected before and didn't manually disconnect
-    // This uses the persistent state stored in AlignEyeDeviceService
-    if (_deviceService.connectionStatus.value == DeviceConnectionStatus.disconnected) {
-      await _deviceService.tryAutoConnect();
-    }
+    // Always try auto-connect when app opens (if not already connected)
+    // Use a small delay to ensure the app is fully initialized
+    Future.delayed(const Duration(milliseconds: 300), () async {
+      final currentStatus = _deviceService.connectionStatus.value;
+      debugPrint('BluetoothServiceManager: Current connection status: $currentStatus');
+      
+      if (currentStatus == DeviceConnectionStatus.disconnected) {
+        debugPrint('BluetoothServiceManager: Status is disconnected, calling tryAutoConnect()...');
+        try {
+          await _deviceService.tryAutoConnect();
+        } catch (e) {
+          debugPrint('BluetoothServiceManager: Error during auto-connect: $e');
+        }
+      } else {
+        debugPrint('BluetoothServiceManager: Already connected/connecting, skipping auto-connect');
+      }
+    });
+    
+    debugPrint('=== BluetoothServiceManager: Initialization complete (auto-connect scheduled) ===');
   }
 
   /// Stop maintaining the connection (called when app is closed)
@@ -33,6 +53,7 @@ class BluetoothServiceManager {
     _stopConnectionMonitoring();
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _autoReconnectAttempts = 0;
     // Note: We don't disconnect here to allow connection to persist
     // If you want to disconnect on app close, uncomment the next line:
     // await _deviceService.disconnect();
@@ -41,6 +62,9 @@ class BluetoothServiceManager {
   /// Manually connect to the device
   Future<void> connect() async {
     _shouldMaintainConnection = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _autoReconnectAttempts = 0;
     await _attemptConnection();
   }
 
@@ -55,8 +79,12 @@ class BluetoothServiceManager {
   }
 
   void _startConnectionMonitoring() {
+    if (_isMonitoring) {
+      return;
+    }
     // Listen to connection status changes
     _deviceService.connectionStatus.addListener(_handleConnectionStatusChange);
+    _isMonitoring = true;
   }
 
   void _handleConnectionStatusChange() {
@@ -64,22 +92,24 @@ class BluetoothServiceManager {
   }
 
   void _stopConnectionMonitoring() {
+    if (!_isMonitoring) {
+      return;
+    }
     _deviceService.connectionStatus.removeListener(_handleConnectionStatusChange);
+    _isMonitoring = false;
   }
 
   void _onConnectionStatusChanged(DeviceConnectionStatus status) {
     if (!_shouldMaintainConnection) return;
 
     if (status == DeviceConnectionStatus.disconnected && !_isAutoReconnecting) {
-      // Only auto-reconnect if user didn't manually disconnect
-      // The _userInitiatedDisconnect flag is managed by AlignEyeDeviceService
       debugPrint('Bluetooth disconnected, checking if should reconnect...');
-      // Don't auto-reconnect here - let the user manually connect again
-      // The auto-reconnect only happens on app start via tryAutoConnect()
+      _scheduleReconnect();
     } else if (status == DeviceConnectionStatus.connected) {
       _reconnectTimer?.cancel();
       _reconnectTimer = null;
       _isAutoReconnecting = false;
+      _autoReconnectAttempts = 0;
       debugPrint('Bluetooth connected successfully');
     }
   }
@@ -100,9 +130,60 @@ class BluetoothServiceManager {
       await _deviceService.connect(isAutoConnect: false);
     } catch (e) {
       debugPrint('Connection failed: $e');
-      // Don't schedule auto-reconnect - user must manually connect again
+      if (_shouldMaintainConnection) {
+        _scheduleReconnect();
+      }
     } finally {
       _isAutoReconnecting = false;
     }
+  }
+
+  void _scheduleReconnect() {
+    if (!_shouldMaintainConnection) return;
+    if (_reconnectTimer != null) return;
+
+    final attempt = _autoReconnectAttempts;
+    final backoffSeconds = attempt == 0
+        ? _initialReconnectDelay.inSeconds
+        : (_initialReconnectDelay.inSeconds << attempt).clamp(
+            _initialReconnectDelay.inSeconds,
+            _maxBackoffSeconds,
+          );
+    final delay = Duration(seconds: backoffSeconds);
+
+    debugPrint(
+      'Scheduling auto-reconnect in ${delay.inSeconds}s (attempt ${attempt + 1})',
+    );
+
+    _reconnectTimer = Timer(delay, () async {
+      _reconnectTimer = null;
+
+      if (!_shouldMaintainConnection) {
+        return;
+      }
+
+      final status = _deviceService.connectionStatus.value;
+      if (status == DeviceConnectionStatus.connected ||
+          status == DeviceConnectionStatus.connecting) {
+        return;
+      }
+
+      _isAutoReconnecting = true;
+      try {
+        await _deviceService.connect(isAutoConnect: true);
+      } catch (e) {
+        debugPrint('Auto-reconnect attempt failed: $e');
+      } finally {
+        _isAutoReconnecting = false;
+      }
+
+      if (_deviceService.connectionStatus.value != DeviceConnectionStatus.connected &&
+          _shouldMaintainConnection) {
+        _autoReconnectAttempts++;
+        _scheduleReconnect();
+      } else {
+        _autoReconnectAttempts = 0;
+      }
+    });
   }
 }
