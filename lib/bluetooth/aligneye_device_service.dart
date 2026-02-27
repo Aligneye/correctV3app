@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,18 @@ const _kCharacteristicUuid = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 const _kDefaultDeviceNamePrefix = 'correct v1';
 
 enum DeviceConnectionStatus { disconnected, connecting, connected }
+
+class _ScanCandidate {
+  const _ScanCandidate({
+    required this.device,
+    required this.rssi,
+    required this.isBonded,
+  });
+
+  final BluetoothDevice device;
+  final int rssi;
+  final bool isBonded;
+}
 
 class PostureReading {
   final String mode;
@@ -112,7 +125,7 @@ class PostureReading {
         '${angleZ.round()}), '
         'cal=(${calY.toStringAsFixed(2)}, ${calZ.toStringAsFixed(2)}), '
         'calibrating=$isCalibrating, posture=$posture, bad=$isBadPosture, '
-        'battery=${batteryVoltage.toStringAsFixed(2)}V (${batteryPercentage}%), '
+        'battery=${batteryVoltage.toStringAsFixed(2)}V ($batteryPercentage%), '
         'difficulty=$difficultyDeg, therapyNow=$therapyPattern, '
         'therapyNext=$therapyNextPattern, '
         'therapyElapsed=$therapyElapsedSeconds, '
@@ -142,12 +155,26 @@ class AlignEyeDeviceService {
   Timer? _connectionTimeoutTimer;
   Timer? _reconnectTimer;
   int _connectionRetryCount = 0;
-  static const int _maxRetries = 3;
-  static const Duration _connectionTimeout = Duration(seconds: 30);
-  static const Duration _serviceDiscoveryTimeout = Duration(seconds: 20);
-  
+  static const int _maxRetries = 1;
+  static const Duration _connectionTimeout = Duration(seconds: 12);
+  static const Duration _serviceDiscoveryTimeout = Duration(seconds: 8);
+
+  bool get _isAndroid12OrAbove {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+
+    // SDK 31 (Android 12) introduced runtime BLUETOOTH_SCAN/CONNECT permissions.
+    return (int.tryParse(Platform.operatingSystemVersion) ?? 0) >= 31;
+  }
+
   // Persistent storage keys
   static const String _keyHasEverConnected = 'bluetooth_has_ever_connected';
+  static const String _keyLastConnectedDeviceId =
+      'bluetooth_last_connected_device_id';
+  static const MethodChannel _bondChannel = MethodChannel(
+    'com.correctv1.bluetooth/unpair',
+  );
 
   Stream<PostureReading> get readings => _readingController.stream;
 
@@ -166,10 +193,13 @@ class AlignEyeDeviceService {
   bool get currentIsCalibrating => currentReading.value?.isCalibrating ?? false;
   String get currentPosture => currentReading.value?.posture ?? 'UNKNOWN';
   bool get currentIsBadPosture => currentReading.value?.isBadPosture ?? false;
-  double get currentBatteryVoltage => currentReading.value?.batteryVoltage ?? 0.0;
-  int get currentBatteryPercentage => currentReading.value?.batteryPercentage ?? 0;
+  double get currentBatteryVoltage =>
+      currentReading.value?.batteryVoltage ?? 0.0;
+  int get currentBatteryPercentage =>
+      currentReading.value?.batteryPercentage ?? 0;
   int get currentDifficultyDeg => currentReading.value?.difficultyDeg ?? 25;
-  String get currentTherapyPattern => currentReading.value?.therapyPattern ?? '';
+  String get currentTherapyPattern =>
+      currentReading.value?.therapyPattern ?? '';
   String get currentTherapyNextPattern =>
       currentReading.value?.therapyNextPattern ?? '';
   int get currentTherapyElapsedSeconds =>
@@ -297,7 +327,9 @@ class AlignEyeDeviceService {
     // Don't auto-connect if user manually disconnected (only during current session)
     // Note: This flag is reset to false when app starts, so it only blocks during the same session
     if (isAutoConnect && _userInitiatedDisconnect) {
-      debugPrint('CONNECT: Skipping auto-connect - user manually disconnected during this session');
+      debugPrint(
+        'CONNECT: Skipping auto-connect - user manually disconnected during this session',
+      );
       return;
     }
 
@@ -329,6 +361,18 @@ class AlignEyeDeviceService {
         return;
       }
 
+      // Check and request permissions first
+      final hasPermissions = await _ensurePermissions();
+      if (!hasPermissions) {
+        debugPrint('Required permissions not granted, cannot proceed');
+        _isConnecting = false;
+        _connectionTimeoutTimer?.cancel();
+        connectionStatus.value = DeviceConnectionStatus.disconnected;
+        throw Exception(
+          'Required permissions not granted. Please grant Location and Bluetooth permissions in app settings.',
+        );
+      }
+
       await _ensureBluetoothOn();
 
       // Verify Bluetooth is actually on with retry
@@ -350,41 +394,42 @@ class AlignEyeDeviceService {
         _isConnecting = false;
         _connectionTimeoutTimer?.cancel();
         connectionStatus.value = DeviceConnectionStatus.disconnected;
-        throw Exception('Bluetooth is not enabled. Please enable Bluetooth and try again.');
-      }
-
-      // Check and request permissions first
-      final hasPermissions = await _ensurePermissions();
-      if (!hasPermissions) {
-        debugPrint('Required permissions not granted, cannot proceed');
-        _isConnecting = false;
-        _connectionTimeoutTimer?.cancel();
-        connectionStatus.value = DeviceConnectionStatus.disconnected;
         throw Exception(
-          'Required permissions not granted. Please grant Location and Bluetooth permissions in app settings.',
+          'Bluetooth is not enabled. Please enable Bluetooth and try again.',
         );
       }
 
       // Clean up any existing scan before starting new one
       await _cleanupScan();
 
-      final device = await _scanForDevice();
+      final preferredDeviceId = await _loadLastConnectedDeviceId();
+      final device = await _scanForDevice(
+        preferredRemoteId: preferredDeviceId,
+        preferPairedDevice: isAutoConnect,
+        prioritizePreferredDevice: isAutoConnect,
+        requirePairedDevice: isAutoConnect,
+        timeout: isAutoConnect
+            ? const Duration(seconds: 4)
+            : const Duration(seconds: 6),
+      );
       if (device == null) {
         debugPrint('Device not found - scan returned null');
         _isConnecting = false;
         _connectionTimeoutTimer?.cancel();
         connectionStatus.value = DeviceConnectionStatus.disconnected;
-        
+
         // Retry connection if we haven't exceeded max retries
         if (_connectionRetryCount < _maxRetries && !isAutoConnect) {
           _connectionRetryCount++;
-          debugPrint('Retrying connection (attempt $_connectionRetryCount/$_maxRetries)...');
+          debugPrint(
+            'Retrying connection (attempt $_connectionRetryCount/$_maxRetries)...',
+          );
           await Future.delayed(Duration(seconds: _connectionRetryCount * 2));
           _isConnecting = false;
           await connect(isAutoConnect: isAutoConnect);
           return;
         }
-        
+
         throw Exception(
           'Device "correct v1" not found. Please ensure the device is powered on and within range.',
         );
@@ -396,13 +441,27 @@ class AlignEyeDeviceService {
       );
 
       // Check if device is paired/bonded
-      final isPaired = await _isDevicePaired(_device!);
+      var isPaired = await _isDevicePaired(_device!);
       debugPrint('Device is paired: $isPaired');
 
+      // For first-time devices, ask Android to create a bond before connection.
+      if (!isPaired) {
+        final pairingCompleted = await _requestPairing(_device!);
+        if (pairingCompleted) {
+          isPaired = true;
+          debugPrint('Pairing completed successfully before connect');
+        } else {
+          debugPrint(
+            'Pairing request was not completed, continuing with connection attempt',
+          );
+        }
+      }
+
       // Check if already connected
-      BluetoothConnectionState currentState = await _device!.connectionState.first.timeout(
-        const Duration(seconds: 2),
-      );
+      BluetoothConnectionState currentState = await _device!
+          .connectionState
+          .first
+          .timeout(const Duration(seconds: 2));
       debugPrint('Current connection state: $currentState');
 
       bool needsConnection = true;
@@ -413,7 +472,9 @@ class AlignEyeDeviceService {
           debugPrint('Connection verified, setting up services...');
           needsConnection = false; // Already connected and verified
         } else {
-          debugPrint('Connection state says connected but verification failed, reconnecting...');
+          debugPrint(
+            'Connection state says connected but verification failed, reconnecting...',
+          );
           try {
             await _device!.disconnect();
             await Future.delayed(const Duration(milliseconds: 500));
@@ -430,17 +491,19 @@ class AlignEyeDeviceService {
         }
       }
 
-      if (needsConnection && currentState != BluetoothConnectionState.connected) {
-        // Use auto-connect only if device is paired (not first time) and not user-initiated disconnect
-        // For first-time connection (not paired), don't use auto-connect
-        final shouldAutoConnect = isPaired && !_userInitiatedDisconnect;
+      if (needsConnection &&
+          currentState != BluetoothConnectionState.connected) {
+        // flutter_blue_plus asserts when autoConnect=true with the default MTU flow.
+        // We still do startup reconnects by explicitly calling connect() from app lifecycle,
+        // but keep the native connect call as a direct connect.
+        const bool shouldAutoConnect = false;
         debugPrint(
-          'Connecting to device (autoConnect: $shouldAutoConnect, isPaired: $isPaired, userDisconnected: $_userInitiatedDisconnect)...',
+          'Connecting to device (autoConnect: $shouldAutoConnect, startupAttempt: $isAutoConnect, isPaired: $isPaired, userDisconnected: $_userInitiatedDisconnect)...',
         );
-        
+
         try {
           await _device!.connect(
-            timeout: const Duration(seconds: 15),
+            timeout: const Duration(seconds: 8),
             autoConnect: shouldAutoConnect,
           );
           debugPrint('Connect call completed, waiting for connection state...');
@@ -449,33 +512,38 @@ class AlignEyeDeviceService {
           await _device!.connectionState
               .where((state) => state == BluetoothConnectionState.connected)
               .first
-              .timeout(const Duration(seconds: 20));
+              .timeout(const Duration(seconds: 8));
           debugPrint('Device connected successfully');
-          
+
           // Small delay to ensure connection is stable
           await Future.delayed(const Duration(milliseconds: 300));
-          
+
           // Reset user initiated disconnect flag on successful connection
           _userInitiatedDisconnect = false;
         } catch (e) {
           debugPrint('Connection failed: $e');
-          final stateAfterError = await _device!.connectionState.first.timeout(
-            const Duration(seconds: 2),
-            onTimeout: () => BluetoothConnectionState.disconnected,
-          );
+          final deviceAfterError = _device;
+          final stateAfterError = deviceAfterError == null
+              ? BluetoothConnectionState.disconnected
+              : await deviceAfterError.connectionState.first.timeout(
+                  const Duration(seconds: 2),
+                  onTimeout: () => BluetoothConnectionState.disconnected,
+                );
           debugPrint('Connection state after error: $stateAfterError');
-          
+
           // Retry if we haven't exceeded max retries
           if (_connectionRetryCount < _maxRetries && !isAutoConnect) {
             _connectionRetryCount++;
-            debugPrint('Retrying connection after failure (attempt $_connectionRetryCount/$_maxRetries)...');
+            debugPrint(
+              'Retrying connection after failure (attempt $_connectionRetryCount/$_maxRetries)...',
+            );
             await Future.delayed(Duration(seconds: _connectionRetryCount * 2));
             _isConnecting = false;
             _connectionTimeoutTimer?.cancel();
             await connect(isAutoConnect: isAutoConnect);
             return;
           }
-          
+
           rethrow;
         }
       }
@@ -498,16 +566,18 @@ class AlignEyeDeviceService {
         debugPrint('ERROR: Could not find notify characteristic');
         debugPrint('Looking for service: $_kServiceUuid');
         debugPrint('Looking for characteristic: $_kCharacteristicUuid');
-        
+
         // Retry service discovery if characteristic not found
         if (_connectionRetryCount < _maxRetries) {
           _connectionRetryCount++;
-          debugPrint('Retrying service discovery (attempt $_connectionRetryCount/$_maxRetries)...');
+          debugPrint(
+            'Retrying service discovery (attempt $_connectionRetryCount/$_maxRetries)...',
+          );
           await Future.delayed(Duration(seconds: _connectionRetryCount));
           services = await _discoverServicesWithRetry();
           _notifyCharacteristic = _findNotifyCharacteristic(services);
         }
-        
+
         if (_notifyCharacteristic == null) {
           await disconnect();
           _isConnecting = false;
@@ -549,18 +619,27 @@ class AlignEyeDeviceService {
       _isConnecting = false;
       connectionStatus.value = DeviceConnectionStatus.connected;
       _connectionRetryCount = 0; // Reset retry count on success
-      
+
       // Save connection state: user has connected and not manually disconnected
       if (!isAutoConnect) {
         // This is a manual connection, save state
-        await _saveConnectionState(hasEverConnected: true, userManuallyDisconnected: false);
-        debugPrint('Saved connection state: hasEverConnected=true, userManuallyDisconnected=false');
+        await _saveConnectionState(
+          hasEverConnected: true,
+          userManuallyDisconnected: false,
+          lastConnectedDeviceId: _device?.remoteId.toString(),
+        );
+        debugPrint(
+          'Saved connection state: hasEverConnected=true, userManuallyDisconnected=false',
+        );
       } else {
         // Auto-connect succeeded, clear manual disconnect flag
-        await _saveConnectionState(userManuallyDisconnected: false);
+        await _saveConnectionState(
+          userManuallyDisconnected: false,
+          lastConnectedDeviceId: _device?.remoteId.toString(),
+        );
         debugPrint('Auto-connect succeeded, cleared manual disconnect flag');
       }
-      
+
       debugPrint('Connection established successfully');
     } catch (e) {
       debugPrint('Connection error: $e');
@@ -568,11 +647,15 @@ class AlignEyeDeviceService {
       _connectionTimeoutTimer?.cancel();
       await disconnect();
       connectionStatus.value = DeviceConnectionStatus.disconnected;
-      
+
       // Retry connection if we haven't exceeded max retries
-      if (_connectionRetryCount < _maxRetries && !isAutoConnect && !_userInitiatedDisconnect) {
+      if (_connectionRetryCount < _maxRetries &&
+          !isAutoConnect &&
+          !_userInitiatedDisconnect) {
         _connectionRetryCount++;
-        debugPrint('Retrying connection after error (attempt $_connectionRetryCount/$_maxRetries)...');
+        debugPrint(
+          'Retrying connection after error (attempt $_connectionRetryCount/$_maxRetries)...',
+        );
         await Future.delayed(Duration(seconds: _connectionRetryCount * 2));
         await connect(isAutoConnect: isAutoConnect);
       }
@@ -581,19 +664,26 @@ class AlignEyeDeviceService {
 
   Future<void> disconnect({bool userInitiated = false}) async {
     debugPrint('Disconnecting (userInitiated: $userInitiated)');
-    
+
     // Cancel any pending connection attempts
     _isConnecting = false;
     _connectionTimeoutTimer?.cancel();
     _reconnectTimer?.cancel();
-    
+
+    final deviceToDisconnect = _device;
+
     if (userInitiated) {
       _userInitiatedDisconnect = true;
       // Save state: user manually disconnected
-      await _saveConnectionState(userManuallyDisconnected: true);
-      debugPrint('User initiated disconnect - saved state to prevent auto-connect');
+      await _saveConnectionState(
+        userManuallyDisconnected: true,
+        clearLastConnectedDeviceId: true,
+      );
+      debugPrint(
+        'User initiated disconnect - saved state to prevent auto-connect',
+      );
     }
-    
+
     // Clean up subscriptions first
     _buffer = '';
     await _notifySubscription?.cancel();
@@ -605,21 +695,10 @@ class AlignEyeDeviceService {
     // Clean up scan
     await _cleanupScan();
 
-    if (_device != null) {
+    if (deviceToDisconnect != null) {
       try {
-        // If user initiated disconnect, unpair the device
-        if (userInitiated) {
-          debugPrint('User initiated disconnect - unpairing device...');
-          try {
-            await _unpairDevice(_device!);
-            debugPrint('Device unpaired successfully');
-          } catch (e) {
-            debugPrint('Failed to unpair device: $e');
-          }
-        }
-        
-        // Disconnect device with timeout
-        await _device!.disconnect().timeout(
+        // Disconnect device with timeout first; unpairing is more reliable once link is closed.
+        await deviceToDisconnect.disconnect().timeout(
           const Duration(seconds: 5),
           onTimeout: () {
             debugPrint('Disconnect timeout, forcing cleanup');
@@ -629,13 +708,23 @@ class AlignEyeDeviceService {
         debugPrint('Error during disconnect: $e');
         // Continue with cleanup even if disconnect fails
       }
+
+      if (userInitiated) {
+        debugPrint('User initiated disconnect - unpairing device...');
+        try {
+          await _unpairDevice(deviceToDisconnect);
+          debugPrint('Device unpaired successfully');
+        } catch (e) {
+          debugPrint('Failed to unpair device: $e');
+        }
+      }
     }
 
     _device = null;
     _notifyCharacteristic = null;
     currentReading.value = null; // Clear current reading on disconnect
     connectionStatus.value = DeviceConnectionStatus.disconnected;
-    
+
     debugPrint('Disconnect completed');
   }
 
@@ -686,7 +775,7 @@ class AlignEyeDeviceService {
         await Future.delayed(const Duration(milliseconds: 500));
       }
     }
-    
+
     throw Exception('Failed to ensure Bluetooth is on');
   }
 
@@ -703,40 +792,44 @@ class AlignEyeDeviceService {
     }
   }
 
-  Future<void> _unpairDevice(BluetoothDevice device) async {
+  Future<bool> _requestPairing(BluetoothDevice device) async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      // iOS handles BLE pairing implicitly based on characteristic permissions.
+      return true;
+    }
+
     try {
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        debugPrint('Attempting to remove bond for device: ${device.remoteId}');
-        
-        // Check if device is bonded first
-        final isPaired = await _isDevicePaired(device);
-        if (isPaired) {
-          // Use platform channel to remove bond on Android
-          const platform = MethodChannel('com.correctv1.bluetooth/unpair');
-          try {
-            final result = await platform.invokeMethod<bool>(
-              'removeBond',
-              {'address': device.remoteId.toString()},
-            );
-            if (result == true) {
-              debugPrint('Device bond removed successfully');
-            } else {
-              debugPrint('Failed to remove bond (returned false)');
-            }
-          } on PlatformException catch (e) {
-            debugPrint('Platform exception while removing bond: ${e.message}');
-            // Fallback: try using flutter_blue_plus if it has removeBond
-            // For now, we'll just log the error
-          }
-        } else {
-          debugPrint('Device is not paired, nothing to unpair');
-        }
-      } else {
-        debugPrint('Unpairing not implemented for this platform');
+      if (await _isDevicePaired(device)) {
+        return true;
       }
+
+      final address = device.remoteId.toString();
+      debugPrint('Requesting bond for device: $address');
+      final started = await _bondChannel.invokeMethod<bool>('createBond', {
+        'address': address,
+      });
+
+      if (started != true) {
+        debugPrint('createBond did not start successfully');
+        return false;
+      }
+
+      // Wait for Android bond state to settle.
+      for (int attempt = 0; attempt < 10; attempt++) {
+        await Future.delayed(const Duration(seconds: 1));
+        if (await _isDevicePaired(device)) {
+          return true;
+        }
+      }
+
+      debugPrint('Pairing request timed out without bonded state');
+      return false;
+    } on PlatformException catch (e) {
+      debugPrint('Platform exception during pairing: ${e.message}');
+      return false;
     } catch (e) {
-      debugPrint('Error unpairing device: $e');
-      // Don't rethrow - unpairing failure shouldn't block disconnect
+      debugPrint('Unexpected error during pairing request: $e');
+      return false;
     }
   }
 
@@ -747,43 +840,42 @@ class AlignEyeDeviceService {
 
     debugPrint('Checking required permissions...');
 
-    // Check and request location permission (required for BLE scanning on Android)
-    final locationStatus = await Permission.location.status;
-    debugPrint('Location permission status: $locationStatus');
+    final bluetoothScanStatus = await Permission.bluetoothScan.status;
+    final bluetoothConnectStatus = await Permission.bluetoothConnect.status;
 
-    if (!locationStatus.isGranted) {
-      debugPrint('Location permission not granted, requesting...');
-      final locationResult = await Permission.location.request();
-      debugPrint('Location permission request result: $locationResult');
+    debugPrint('Bluetooth scan permission: $bluetoothScanStatus');
+    debugPrint('Bluetooth connect permission: $bluetoothConnectStatus');
 
-      if (!locationResult.isGranted) {
-        debugPrint('Location permission denied by user');
+    if (!bluetoothScanStatus.isGranted) {
+      debugPrint('Requesting Bluetooth scan permission...');
+      final scanResult = await Permission.bluetoothScan.request();
+      if (!scanResult.isGranted) {
+        debugPrint('Bluetooth scan permission denied');
         return false;
       }
     }
 
-    // Check Bluetooth permissions (Android 12+)
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      final bluetoothScanStatus = await Permission.bluetoothScan.status;
-      final bluetoothConnectStatus = await Permission.bluetoothConnect.status;
-
-      debugPrint('Bluetooth scan permission: $bluetoothScanStatus');
-      debugPrint('Bluetooth connect permission: $bluetoothConnectStatus');
-
-      if (!bluetoothScanStatus.isGranted) {
-        debugPrint('Requesting Bluetooth scan permission...');
-        final scanResult = await Permission.bluetoothScan.request();
-        if (!scanResult.isGranted) {
-          debugPrint('Bluetooth scan permission denied');
-          return false;
-        }
+    if (!bluetoothConnectStatus.isGranted) {
+      debugPrint('Requesting Bluetooth connect permission...');
+      final connectResult = await Permission.bluetoothConnect.request();
+      if (!connectResult.isGranted) {
+        debugPrint('Bluetooth connect permission denied');
+        return false;
       }
+    }
 
-      if (!bluetoothConnectStatus.isGranted) {
-        debugPrint('Requesting Bluetooth connect permission...');
-        final connectResult = await Permission.bluetoothConnect.request();
-        if (!connectResult.isGranted) {
-          debugPrint('Bluetooth connect permission denied');
+    // Location permission is only required pre-Android 12 for BLE scanning.
+    if (!_isAndroid12OrAbove) {
+      final locationStatus = await Permission.location.status;
+      debugPrint('Location permission status: $locationStatus');
+
+      if (!locationStatus.isGranted) {
+        debugPrint('Location permission not granted, requesting...');
+        final locationResult = await Permission.location.request();
+        debugPrint('Location permission request result: $locationResult');
+
+        if (!locationResult.isGranted) {
+          debugPrint('Location permission denied by user');
           return false;
         }
       }
@@ -793,45 +885,75 @@ class AlignEyeDeviceService {
     return true;
   }
 
-  Future<BluetoothDevice?> _scanForDevice() async {
-    // First, check for already connected devices
-    final connectedDevices = await FlutterBluePlus.connectedDevices;
+  Future<void> _unpairDevice(BluetoothDevice device) async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    try {
+      debugPrint('Attempting to remove bond for device: ${device.remoteId}');
+      await _bondChannel.invokeMethod<bool>('removeBond', {
+        'address': device.remoteId.toString(),
+      });
+    } on PlatformException catch (e) {
+      debugPrint('Platform exception while removing bond: ${e.message}');
+    } catch (e) {
+      debugPrint('Error unpairing device: $e');
+    }
+  }
+
+  bool _matchesTargetDeviceName(String candidateName) {
+    final normalizedName = candidateName.trim().toLowerCase();
+    final normalizedPrefix = _deviceNamePrefix.trim().toLowerCase();
+    if (normalizedName.isEmpty) {
+      return false;
+    }
+    return normalizedName == normalizedPrefix ||
+        normalizedName.startsWith(normalizedPrefix);
+  }
+
+  Future<BluetoothDevice?> _scanForDevice({
+    String? preferredRemoteId,
+    bool preferPairedDevice = true,
+    bool prioritizePreferredDevice = true,
+    bool requirePairedDevice = false,
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    final normalizedPreferredId = preferredRemoteId?.toLowerCase();
+
+    // First, prefer devices that are already connected.
+    final connectedDevices = FlutterBluePlus.connectedDevices;
+    BluetoothDevice? connectedMatch;
     for (final device in connectedDevices) {
-      final name = device.platformName.trim();
-      if (name.toLowerCase() == _deviceNamePrefix.toLowerCase() ||
-          name.toLowerCase().startsWith(_deviceNamePrefix.toLowerCase())) {
-        debugPrint('Found already connected device: $name');
+      final deviceId = device.remoteId.toString().toLowerCase();
+      if (normalizedPreferredId != null && deviceId == normalizedPreferredId) {
+        debugPrint('Found preferred connected device: ${device.platformName}');
         return device;
       }
+      if (_matchesTargetDeviceName(device.platformName)) {
+        connectedMatch ??= device;
+      }
+    }
+    if (connectedMatch != null) {
+      debugPrint(
+        'Found matching connected device: ${connectedMatch.platformName}',
+      );
+      return connectedMatch;
     }
 
-    // Second, check for bonded/paired devices (for auto-connect scenarios)
-    // This allows faster connection if device is already paired
+    // Build bonded device index for paired-first selection.
+    final bondedDeviceIds = <String>{};
     try {
       final bondedDevices = await FlutterBluePlus.bondedDevices;
-      debugPrint('Found ${bondedDevices.length} bonded devices');
-      
       for (final device in bondedDevices) {
-        final name = device.platformName.trim();
-        debugPrint('Checking bonded device: "$name"');
-        
-        if (name.toLowerCase() == _deviceNamePrefix.toLowerCase() ||
-            name.toLowerCase().startsWith(_deviceNamePrefix.toLowerCase())) {
-          debugPrint('Found already paired device: $name');
-          return device;
+        if (_matchesTargetDeviceName(device.platformName)) {
+          bondedDeviceIds.add(device.remoteId.toString().toLowerCase());
         }
       }
-      
-      if (bondedDevices.isEmpty) {
-        debugPrint('No bonded devices found');
-      }
+      debugPrint('Matching bonded devices found: ${bondedDeviceIds.length}');
     } catch (e) {
-      debugPrint('Error checking bonded devices: $e');
+      debugPrint('Error loading bonded devices: $e');
     }
-
-    // Then scan for live advertisement packets. This avoids selecting stale
-    // bonded entries that are currently out of range / not advertising.
-    final completer = Completer<BluetoothDevice?>();
 
     // Clean up any existing scan
     await _cleanupScan();
@@ -841,104 +963,106 @@ class AlignEyeDeviceService {
     // Check adapter state before scanning
     final adapterState = await FlutterBluePlus.adapterState.first;
     debugPrint('Adapter state before scan: $adapterState');
-
     if (adapterState != BluetoothAdapterState.on) {
       debugPrint('ERROR: Bluetooth adapter is not ON, cannot scan');
       return null;
     }
 
-    // Start scanning WITHOUT service filter to find all devices
-    // Service UUID filter can be too restrictive if device doesn't advertise it
+    final candidates = <String, _ScanCandidate>{};
+    final serviceUuidLower = _kServiceUuid.toLowerCase();
+
+    _scanSubscription = FlutterBluePlus.scanResults.listen(
+      (results) {
+        for (final result in results) {
+          final platformName = result.device.platformName.trim();
+          final advName = result.advertisementData.advName.trim();
+          final candidateName = platformName.isNotEmpty
+              ? platformName
+              : advName;
+
+          final hasServiceMatch = result.advertisementData.serviceUuids.any(
+            (uuid) => uuid.toString().toLowerCase() == serviceUuidLower,
+          );
+          final hasNameMatch = _matchesTargetDeviceName(candidateName);
+
+          if (!hasServiceMatch && !hasNameMatch) {
+            continue;
+          }
+
+          final remoteId = result.device.remoteId.toString().toLowerCase();
+          final isBonded = bondedDeviceIds.contains(remoteId);
+          final existing = candidates[remoteId];
+
+          if (existing == null || result.rssi > existing.rssi) {
+            candidates[remoteId] = _ScanCandidate(
+              device: result.device,
+              rssi: result.rssi,
+              isBonded: isBonded,
+            );
+          }
+        }
+      },
+      onError: (error) {
+        debugPrint('Scan results stream error: $error');
+      },
+    );
+
     try {
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
-      debugPrint('Scan started successfully');
+      await FlutterBluePlus.startScan(timeout: timeout);
     } catch (e) {
       debugPrint('ERROR: Failed to start scan: $e');
-      debugPrint(
-        'This is usually due to missing location permission on Android',
-      );
-      debugPrint('Please grant location permission in app settings');
+      debugPrint('Please verify Bluetooth + Location permissions on Android');
+      await _scanSubscription?.cancel();
+      _scanSubscription = null;
       return null;
     }
 
-    final scanResultCount = <int>[0]; // Use list to make it mutable in closure
-    _scanSubscription = FlutterBluePlus.scanResults.listen((results) async {
-      scanResultCount[0] += results.length;
+    await Future.delayed(timeout + const Duration(milliseconds: 250));
+    await _cleanupScan();
+
+    if (candidates.isEmpty) {
+      debugPrint('Scan finished with no matching candidates');
+      return null;
+    }
+
+    if (prioritizePreferredDevice &&
+        normalizedPreferredId != null &&
+        candidates.containsKey(normalizedPreferredId)) {
+      final preferred = candidates[normalizedPreferredId]!;
       debugPrint(
-        'Scan found ${results.length} devices (total: ${scanResultCount[0]})',
+        'Selected preferred known device: ${preferred.device.platformName} (RSSI ${preferred.rssi})',
       );
+      return preferred.device;
+    }
 
-      for (final result in results) {
-        final name = result.device.platformName.trim();
-        final advName = result.advertisementData.advName.trim();
-
-        // Check both platform name and advertisement name
-        final deviceName = name.isNotEmpty ? name : advName;
-
-        // Log all devices for debugging
-        if (deviceName.isNotEmpty) {
-          debugPrint(
-            '  - Found device: "$deviceName" (platform: "$name", adv: "$advName")',
-          );
-        }
-
-        // Check by service UUID first (most reliable)
-        if (result.advertisementData.serviceUuids.any(
-          (uuid) =>
-              uuid.toString().toLowerCase() == _kServiceUuid.toLowerCase(),
-        )) {
-          debugPrint('Found device by service UUID: $deviceName');
-          await FlutterBluePlus.stopScan();
-          await _scanSubscription?.cancel();
-          if (!completer.isCompleted) {
-            completer.complete(result.device);
-          }
-          return;
-        }
-
-        // Match device name (case-insensitive, exact or prefix match)
-        if (deviceName.isNotEmpty) {
-          if (deviceName.toLowerCase() == _deviceNamePrefix.toLowerCase() ||
-              deviceName.toLowerCase().startsWith(
-                _deviceNamePrefix.toLowerCase(),
-              )) {
-            debugPrint('Found device by name match: $deviceName');
-            await FlutterBluePlus.stopScan();
-            await _scanSubscription?.cancel();
-            if (!completer.isCompleted) {
-              completer.complete(result.device);
-            }
-            return;
-          }
-        }
+    if (preferPairedDevice) {
+      final pairedCandidates = candidates.values
+          .where((candidate) => candidate.isBonded)
+          .toList();
+      if (pairedCandidates.isNotEmpty) {
+        pairedCandidates.sort((a, b) => b.rssi.compareTo(a.rssi));
+        final bestPaired = pairedCandidates.first;
+        debugPrint(
+          'Selected paired candidate: ${bestPaired.device.platformName} (RSSI ${bestPaired.rssi})',
+        );
+        return bestPaired.device;
       }
-    });
+    }
 
-    return completer.future.timeout(
-      const Duration(seconds: 20),
-      onTimeout: () async {
-        debugPrint('Scan timeout after 20 seconds - device not found');
-        debugPrint('Total devices scanned: ${scanResultCount[0]}');
+    if (requirePairedDevice) {
+      debugPrint(
+        'Auto-connect requires a paired device, but no paired candidates are currently available',
+      );
+      return null;
+    }
 
-        if (scanResultCount[0] == 0) {
-          debugPrint('WARNING: No devices found at all during scan!');
-          debugPrint('This could mean:');
-          debugPrint(
-            '  1. Location permission not granted (required for BLE scan on Android)',
-          );
-          debugPrint('  2. Bluetooth is not enabled');
-          debugPrint('  3. Device is not advertising');
-          debugPrint('  4. Device is out of range');
-        }
-
-        await FlutterBluePlus.stopScan();
-        await _scanSubscription?.cancel();
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-        return null;
-      },
+    final allCandidates = candidates.values.toList()
+      ..sort((a, b) => b.rssi.compareTo(a.rssi));
+    final nearest = allCandidates.first;
+    debugPrint(
+      'Selected nearest candidate: ${nearest.device.platformName} (RSSI ${nearest.rssi})',
     );
+    return nearest.device;
   }
 
   BluetoothCharacteristic? _findNotifyCharacteristic(
@@ -1008,17 +1132,20 @@ class AlignEyeDeviceService {
 
   void _handleConnectionUpdate(BluetoothConnectionState state) {
     debugPrint('Connection state changed: $state');
-    
+
     if (state == BluetoothConnectionState.connected) {
       // Reset user initiated disconnect flag when reconnected (user manually connected again)
       _userInitiatedDisconnect = false;
       _isConnecting = false;
       _connectionTimeoutTimer?.cancel();
       _connectionRetryCount = 0;
-      
+
       // Save state: user has connected again, clear manual disconnect flag
-      _saveConnectionState(userManuallyDisconnected: false);
-      
+      _saveConnectionState(
+        userManuallyDisconnected: false,
+        lastConnectedDeviceId: _device?.remoteId.toString(),
+      );
+
       // Verify connection is actually working
       _verifyConnection().then((isValid) {
         if (isValid) {
@@ -1031,19 +1158,17 @@ class AlignEyeDeviceService {
     } else if (state == BluetoothConnectionState.disconnected) {
       _isConnecting = false;
       _connectionTimeoutTimer?.cancel();
-      
+
       // Only update status if we're not already disconnected
       if (connectionStatus.value != DeviceConnectionStatus.disconnected) {
         connectionStatus.value = DeviceConnectionStatus.disconnected;
-        
+
         // Don't auto-reconnect here - auto-reconnect only happens on app start
         // via tryAutoConnect() which checks persistent state
       }
-      
+
       // Keep _userInitiatedDisconnect flag set if user manually disconnected
       // This prevents auto-reconnect until user manually connects again
-    } else if (state == BluetoothConnectionState.connecting) {
-      connectionStatus.value = DeviceConnectionStatus.connecting;
     }
   }
 
@@ -1066,7 +1191,7 @@ class AlignEyeDeviceService {
     for (int attempt = 0; attempt < 3; attempt++) {
       try {
         debugPrint('Discovering services (attempt ${attempt + 1}/3)...');
-        
+
         if (_device == null) {
           throw Exception('Device is null');
         }
@@ -1074,9 +1199,9 @@ class AlignEyeDeviceService {
         services = await _device!.discoverServices().timeout(
           _serviceDiscoveryTimeout,
         );
-        
+
         debugPrint('Found ${services.length} services');
-        
+
         // Log all services and characteristics for debugging
         for (final service in services) {
           debugPrint('  Service: ${service.uuid}');
@@ -1086,7 +1211,7 @@ class AlignEyeDeviceService {
             );
           }
         }
-        
+
         // If we got services, break out of retry loop
         if (services.isNotEmpty) {
           break;
@@ -1094,7 +1219,7 @@ class AlignEyeDeviceService {
       } catch (e) {
         lastError = e is Exception ? e : Exception(e.toString());
         debugPrint('Service discovery failed (attempt ${attempt + 1}/3): $e');
-        
+
         if (attempt < 2) {
           // Wait before retry with exponential backoff
           await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
@@ -1103,7 +1228,8 @@ class AlignEyeDeviceService {
     }
 
     if (services == null || services.isEmpty) {
-      throw lastError ?? Exception('Failed to discover services after 3 attempts');
+      throw lastError ??
+          Exception('Failed to discover services after 3 attempts');
     }
 
     return services;
@@ -1119,10 +1245,10 @@ class AlignEyeDeviceService {
       try {
         debugPrint('Enabling notifications (attempt ${attempt + 1}/3)...');
         await _notifyCharacteristic!.setNotifyValue(true);
-        
+
         // Wait a bit to ensure notification is set up
         await Future.delayed(const Duration(milliseconds: 200));
-        
+
         // Verify notification is enabled
         if (_notifyCharacteristic!.isNotifying) {
           debugPrint('Notifications enabled successfully');
@@ -1131,8 +1257,10 @@ class AlignEyeDeviceService {
           throw Exception('Notification enabled but isNotifying is false');
         }
       } catch (e) {
-        debugPrint('Failed to enable notifications (attempt ${attempt + 1}/3): $e');
-        
+        debugPrint(
+          'Failed to enable notifications (attempt ${attempt + 1}/3): $e',
+        );
+
         if (attempt < 2) {
           await Future.delayed(Duration(milliseconds: 300 * (attempt + 1)));
         } else {
@@ -1154,7 +1282,7 @@ class AlignEyeDeviceService {
       final state = await _device!.connectionState.first.timeout(
         const Duration(seconds: 2),
       );
-      
+
       if (state != BluetoothConnectionState.connected) {
         debugPrint('Connection verification failed: state is $state');
         return false;
@@ -1165,14 +1293,20 @@ class AlignEyeDeviceService {
       if (_notifyCharacteristic != null) {
         // Check if notifications are enabled
         if (!_notifyCharacteristic!.isNotifying) {
-          debugPrint('Connection verification: characteristic exists but notifications not enabled yet');
+          debugPrint(
+            'Connection verification: characteristic exists but notifications not enabled yet',
+          );
           // This is okay - we'll enable them during setup
           return true; // Connection is good, just need to set up notifications
         }
-        debugPrint('Connection verification passed - device connected and notifications enabled');
+        debugPrint(
+          'Connection verification passed - device connected and notifications enabled',
+        );
         return true;
       } else {
-        debugPrint('Connection verification passed - device connected, will set up services');
+        debugPrint(
+          'Connection verification passed - device connected, will set up services',
+        );
         return true; // Device is connected, we just need to set up services
       }
     } catch (e) {
@@ -1188,22 +1322,26 @@ class AlignEyeDeviceService {
     // Reset user initiated disconnect flag on app start
     // This ensures auto-connect always happens when app opens
     _userInitiatedDisconnect = false;
-    debugPrint('=== AUTO-CONNECT: App started - resetting user disconnect flag, attempting auto-connect ===');
-    
+    debugPrint(
+      '=== AUTO-CONNECT: App started - resetting user disconnect flag, attempting auto-connect ===',
+    );
+
     // Load persistent state (but don't use it to block auto-connect on app start)
     await _loadConnectionState();
-    
+
     // Note: We don't check _userInitiatedDisconnect here because we just reset it
     // The flag will be set if user disconnects during this session
 
     if (connectionStatus.value != DeviceConnectionStatus.disconnected) {
-      debugPrint('AUTO-CONNECT: Already connected or connecting, skipping auto-connect');
+      debugPrint(
+        'AUTO-CONNECT: Already connected or connecting, skipping auto-connect',
+      );
       return;
     }
 
     // Wait a bit for the app to fully initialize and Bluetooth to be ready
     await Future.delayed(const Duration(milliseconds: 500));
-    
+
     // Check if Bluetooth is supported
     try {
       final supported = await FlutterBluePlus.isSupported;
@@ -1211,26 +1349,32 @@ class AlignEyeDeviceService {
         debugPrint('AUTO-CONNECT: Bluetooth is not supported on this device');
         return;
       }
-      
+
       // Check if Bluetooth adapter is ready
       final adapterState = await FlutterBluePlus.adapterState.first.timeout(
         const Duration(seconds: 2),
         onTimeout: () {
-          debugPrint('AUTO-CONNECT: Timeout waiting for Bluetooth adapter state');
+          debugPrint(
+            'AUTO-CONNECT: Timeout waiting for Bluetooth adapter state',
+          );
           return BluetoothAdapterState.unknown;
         },
       );
-      
+
       if (adapterState != BluetoothAdapterState.on) {
-        debugPrint('AUTO-CONNECT: Bluetooth adapter is not ON (state: $adapterState), cannot auto-connect');
+        debugPrint(
+          'AUTO-CONNECT: Bluetooth adapter is not ON (state: $adapterState), cannot auto-connect',
+        );
         return;
       }
-      
-      debugPrint('AUTO-CONNECT: Bluetooth is ready, starting connection flow...');
+
+      debugPrint(
+        'AUTO-CONNECT: Bluetooth is ready, starting connection flow...',
+      );
       // Force reset again right before connecting to ensure session flag never blocks startup.
       _userInitiatedDisconnect = false;
-      // Always attempt a full connect flow on app open. This can still connect via
-      // bonded device quickly, but also scans when no bonded entry is present.
+      // Startup flow only targets already paired devices. If none are available,
+      // UI can prompt the user to manually connect to the nearest device.
       await connect(isAutoConnect: true);
       debugPrint('AUTO-CONNECT: Connection attempt completed');
     } catch (e, stackTrace) {
@@ -1239,18 +1383,30 @@ class AlignEyeDeviceService {
       // Don't throw - auto-connect failures should be silent
     }
   }
-  
+
   /// Save connection state to persistent storage
   /// Note: We don't persist userManuallyDisconnected anymore
   /// because we want auto-connect to always happen on app start
   Future<void> _saveConnectionState({
     bool? hasEverConnected,
     bool? userManuallyDisconnected,
+    String? lastConnectedDeviceId,
+    bool clearLastConnectedDeviceId = false,
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (hasEverConnected != null) {
         await prefs.setBool(_keyHasEverConnected, hasEverConnected);
+      }
+      if (clearLastConnectedDeviceId) {
+        await prefs.remove(_keyLastConnectedDeviceId);
+      } else if (lastConnectedDeviceId != null) {
+        final normalized = lastConnectedDeviceId.trim();
+        if (normalized.isEmpty) {
+          await prefs.remove(_keyLastConnectedDeviceId);
+        } else {
+          await prefs.setString(_keyLastConnectedDeviceId, normalized);
+        }
       }
       // Don't persist userManuallyDisconnected - it's session-only now
       // Just update the in-memory flag for the current session
@@ -1261,7 +1417,7 @@ class AlignEyeDeviceService {
       debugPrint('Error saving connection state: $e');
     }
   }
-  
+
   /// Load connection state from persistent storage
   /// Note: We don't load _userInitiatedDisconnect from storage anymore
   /// because we want auto-connect to always happen on app start
@@ -1270,10 +1426,27 @@ class AlignEyeDeviceService {
       final prefs = await SharedPreferences.getInstance();
       // We still load hasEverConnected to know if user has connected before
       final hasEverConnected = prefs.getBool(_keyHasEverConnected) ?? false;
-      debugPrint('Loaded connection state: hasEverConnected=$hasEverConnected');
+      final lastConnectedDeviceId = prefs.getString(_keyLastConnectedDeviceId);
+      debugPrint(
+        'Loaded connection state: hasEverConnected=$hasEverConnected, lastConnectedDeviceId=$lastConnectedDeviceId',
+      );
       // Don't load userManuallyDisconnected - it's session-only now
     } catch (e) {
       debugPrint('Error loading connection state: $e');
+    }
+  }
+
+  Future<String?> _loadLastConnectedDeviceId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final value = prefs.getString(_keyLastConnectedDeviceId)?.trim();
+      if (value == null || value.isEmpty) {
+        return null;
+      }
+      return value;
+    } catch (e) {
+      debugPrint('Error loading last connected device id: $e');
+      return null;
     }
   }
 }

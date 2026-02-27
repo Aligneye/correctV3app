@@ -140,6 +140,8 @@ class _HomeDashboardState extends State<HomeDashboard>
   int _therapyRemainingSeconds = 0;
   String _currentTherapyPattern = 'Waiting for therapy';
   String _nextTherapyPattern = 'Waiting for therapy';
+  bool _startupConnectPromptShown = false;
+  bool _startupConnectPromptOpen = false;
 
   static const List<_QuickMode> _quickModes = [
     _QuickMode(
@@ -215,6 +217,8 @@ class _HomeDashboardState extends State<HomeDashboard>
             : 'Waiting for therapy';
       });
     });
+
+    _scheduleStartupConnectPrompt();
   }
 
   @override
@@ -238,7 +242,9 @@ class _HomeDashboardState extends State<HomeDashboard>
       _therapyRemainingSeconds = minutes * 60;
     });
 
-    _therapyCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    _therapyCountdownTimer = Timer.periodic(const Duration(seconds: 1), (
+      timer,
+    ) {
       if (!mounted) {
         timer.cancel();
         return;
@@ -263,6 +269,82 @@ class _HomeDashboardState extends State<HomeDashboard>
         _therapyRemainingSeconds = 0;
       });
     }
+  }
+
+  void _scheduleStartupConnectPrompt() {
+    Future.delayed(const Duration(seconds: 4), () async {
+      if (!mounted || _startupConnectPromptShown) {
+        return;
+      }
+
+      // Wait for in-flight startup auto-connect to settle before prompting.
+      for (int attempt = 0; attempt < 20; attempt++) {
+        if (!mounted || _startupConnectPromptShown) {
+          return;
+        }
+        if (_deviceService.connectionStatus.value !=
+            DeviceConnectionStatus.connecting) {
+          break;
+        }
+        await Future.delayed(const Duration(seconds: 1));
+      }
+
+      if (!mounted || _startupConnectPromptShown) {
+        return;
+      }
+
+      final status = _deviceService.connectionStatus.value;
+      if (status == DeviceConnectionStatus.connected) {
+        _startupConnectPromptShown = true;
+        return;
+      }
+
+      if (status == DeviceConnectionStatus.connecting) {
+        // Still connecting after the grace period; recheck shortly.
+        _scheduleStartupConnectPrompt();
+        return;
+      }
+
+      _startupConnectPromptShown = true;
+      await _showStartupConnectPrompt();
+    });
+  }
+
+  Future<void> _showStartupConnectPrompt() async {
+    if (!mounted || _startupConnectPromptOpen) {
+      return;
+    }
+
+    _startupConnectPromptOpen = true;
+    final shouldConnect = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Connect device'),
+          content: const Text(
+            'No connected AlignEye device was found.\n\n'
+            'The app can try your paired device first, then connect to the nearest available device.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Connect'),
+            ),
+          ],
+        );
+      },
+    );
+    _startupConnectPromptOpen = false;
+
+    if (!mounted || shouldConnect != true) {
+      return;
+    }
+
+    await _handleDeviceStatusTap();
   }
 
   Future<void> _handleDeviceStatusTap() async {
@@ -918,10 +1000,7 @@ class _RecentValuesCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             recentValues,
-            style: const TextStyle(
-              fontSize: 12,
-              color: _kMutedText,
-            ),
+            style: const TextStyle(fontSize: 12, color: _kMutedText),
           ),
         ],
       ),
@@ -1352,7 +1431,9 @@ class _TherapyPatternInfo extends StatelessWidget {
         color: highlighted ? const Color(0xFFEFF6FF) : const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: highlighted ? const Color(0xFFBFDBFE) : const Color(0xFFE2E8F0),
+          color: highlighted
+              ? const Color(0xFFBFDBFE)
+              : const Color(0xFFE2E8F0),
         ),
       ),
       child: Column(
