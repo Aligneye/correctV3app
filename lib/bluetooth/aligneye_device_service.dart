@@ -39,6 +39,10 @@ class PostureReading {
   final double calY;
   final double calZ;
   final bool isCalibrating;
+  final String calibrationResult;
+  final int calibrationElapsedMs;
+  final int calibrationTotalMs;
+  final String calibrationPhase;
   final String posture;
   final bool isBadPosture;
   final double batteryVoltage;
@@ -63,6 +67,10 @@ class PostureReading {
     required this.calY,
     required this.calZ,
     required this.isCalibrating,
+    required this.calibrationResult,
+    required this.calibrationElapsedMs,
+    required this.calibrationTotalMs,
+    required this.calibrationPhase,
     required this.posture,
     required this.isBadPosture,
     required this.batteryVoltage,
@@ -102,6 +110,10 @@ class PostureReading {
       isCalibrating:
           json['is_calibrating'] == true ||
           json['is_calibrating']?.toString() == 'true',
+      calibrationResult: json['calibration_result']?.toString() ?? '',
+      calibrationElapsedMs: toInt(json['c_elap'] ?? json['calibration_elapsed_ms']),
+      calibrationTotalMs: toInt(json['c_tot'] ?? json['calibration_total_ms']),
+      calibrationPhase: (json['c_phase']?.toString() ?? 'IDLE').toUpperCase(),
       posture: json['posture']?.toString() ?? 'UNKNOWN',
       isBadPosture:
           json['is_bad_posture'] == true ||
@@ -109,10 +121,12 @@ class PostureReading {
       batteryVoltage: toDouble(json['battery_voltage']),
       batteryPercentage: toInt(json['battery_percentage']),
       difficultyDeg: toInt(json['difficulty_deg']),
-      therapyPattern: json['therapy_pattern']?.toString() ?? '',
-      therapyNextPattern: json['therapy_next_pattern']?.toString() ?? '',
-      therapyElapsedSeconds: toInt(json['therapy_elapsed_sec']),
-      therapyRemainingSeconds: toInt(json['therapy_remaining_sec']),
+      // Device sends shortened field names: t_patt, t_next, t_elap, t_rem
+      // Also check for full names for backward compatibility
+      therapyPattern: (json['t_patt'] ?? json['therapy_pattern'])?.toString() ?? '',
+      therapyNextPattern: (json['t_next'] ?? json['therapy_next_pattern'])?.toString() ?? '',
+      therapyElapsedSeconds: toInt(json['t_elap'] ?? json['therapy_elapsed_sec']),
+      therapyRemainingSeconds: toInt(json['t_rem'] ?? json['therapy_remaining_sec']),
       timestamp: DateTime.now(),
     );
   }
@@ -250,21 +264,8 @@ class AlignEyeDeviceService {
       return false;
     }
 
-    // Send a few common command formats for compatibility across firmware
-    // variants. Unknown commands are ignored by firmware safely.
-    final commands = <String>[
-      'CALIBRATE=START',
-      'CALIBRATION=START',
-      'ACTION=CALIBRATE',
-    ];
-
-    var sentAny = false;
-    for (final payload in commands) {
-      final sent = await _writeTextCommand(payload);
-      sentAny = sentAny || sent;
-      await Future.delayed(const Duration(milliseconds: 70));
-    }
-    return sentAny;
+    // Single command - firmware handles CALIBRATE=START, CALIBRATION=START, ACTION=CALIBRATE
+    return _writeTextCommand('CALIBRATION=START');
   }
 
   Future<bool> sendCalibrationCancel() async {
@@ -272,19 +273,7 @@ class AlignEyeDeviceService {
       return false;
     }
 
-    final commands = <String>[
-      'CALIBRATE=CANCEL',
-      'CALIBRATION=CANCEL',
-      'ACTION=CALIBRATE_CANCEL',
-    ];
-
-    var sentAny = false;
-    for (final payload in commands) {
-      final sent = await _writeTextCommand(payload);
-      sentAny = sentAny || sent;
-      await Future.delayed(const Duration(milliseconds: 70));
-    }
-    return sentAny;
+    return _writeTextCommand('CALIBRATION=CANCEL');
   }
 
   Future<bool> _writeTextCommand(String payload) async {
@@ -917,7 +906,7 @@ class AlignEyeDeviceService {
     bool preferPairedDevice = true,
     bool prioritizePreferredDevice = true,
     bool requirePairedDevice = false,
-    Duration timeout = const Duration(seconds: 12),
+    Duration timeout = const Duration(seconds: 5),
   }) async {
     final normalizedPreferredId = preferredRemoteId?.toLowerCase();
 
@@ -974,18 +963,12 @@ class AlignEyeDeviceService {
     _scanSubscription = FlutterBluePlus.scanResults.listen(
       (results) {
         for (final result in results) {
-          final platformName = result.device.platformName.trim();
-          final advName = result.advertisementData.advName.trim();
-          final candidateName = platformName.isNotEmpty
-              ? platformName
-              : advName;
-
           final hasServiceMatch = result.advertisementData.serviceUuids.any(
             (uuid) => uuid.toString().toLowerCase() == serviceUuidLower,
           );
-          final hasNameMatch = _matchesTargetDeviceName(candidateName);
-
-          if (!hasServiceMatch && !hasNameMatch) {
+          // Require AlignEye service UUID to be present so we only consider
+          // genuine AlignEye devices during scanning.
+          if (!hasServiceMatch) {
             continue;
           }
 

@@ -613,7 +613,8 @@ class _HomeDashboardState extends State<HomeDashboard>
                     );
                     if (!mounted) return;
                     if (result == true) {
-                      widget.onNavigateToPage(1);
+                      // Navigate to home page (index 0) after successful calibration
+                      widget.onNavigateToPage(0);
                     }
                   },
                   onPostureTimingSelected: (timing) {
@@ -1233,64 +1234,11 @@ class _ModeControlCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: therapyCountdownRunning
-                    ? const Color(0xFFEFF6FF)
-                    : const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: therapyCountdownRunning
-                      ? const Color(0xFFBFDBFE)
-                      : const Color(0xFFE2E8F0),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.timer_outlined,
-                    size: 16,
-                    color: therapyCountdownRunning
-                        ? _kPrimaryBlue
-                        : const Color(0xFF64748B),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    therapyCountdownRunning
-                        ? 'Countdown: ${_formatCountdown(therapyRemainingSeconds)}'
-                        : 'Tap Therapy or duration to start',
-                    style: TextStyle(
-                      color: therapyCountdownRunning
-                          ? _kPrimaryBlue
-                          : const Color(0xFF64748B),
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _TherapyPatternInfo(
-                    label: 'Now',
-                    pattern: currentTherapyPattern,
-                    highlighted: true,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _TherapyPatternInfo(
-                    label: 'Next',
-                    pattern: nextTherapyPattern,
-                    highlighted: false,
-                  ),
-                ),
-              ],
+            _TherapyStatusRow(
+              therapyCountdownRunning: therapyCountdownRunning,
+              therapyRemainingSeconds: therapyRemainingSeconds,
+              currentPattern: currentTherapyPattern,
+              nextPattern: nextTherapyPattern,
             ),
           ],
         ],
@@ -1304,6 +1252,222 @@ String _formatCountdown(int totalSeconds) {
   final minutes = (safeSeconds ~/ 60).toString().padLeft(2, '0');
   final seconds = (safeSeconds % 60).toString().padLeft(2, '0');
   return '$minutes:$seconds';
+}
+
+class _TherapyStatusRow extends StatefulWidget {
+  final bool therapyCountdownRunning;
+  final int therapyRemainingSeconds;
+  final String currentPattern;
+  final String nextPattern;
+
+  const _TherapyStatusRow({
+    required this.therapyCountdownRunning,
+    required this.therapyRemainingSeconds,
+    required this.currentPattern,
+    required this.nextPattern,
+  });
+
+  @override
+  State<_TherapyStatusRow> createState() => _TherapyStatusRowState();
+}
+
+class _TherapyStatusRowState extends State<_TherapyStatusRow> {
+  late PageController _pageController;
+  int _currentPage = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isActive =
+        widget.therapyCountdownRunning &&
+        widget.currentPattern != 'Waiting for therapy' &&
+        widget.currentPattern != 'Preparing pattern...';
+
+    return Container(
+      height: 86,
+      decoration: BoxDecoration(
+        gradient: isActive
+            ? LinearGradient(
+                colors: [const Color(0xFFEFF6FF), const Color(0xFFF0F9FF)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : null,
+        color: isActive ? null : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isActive
+              ? _kPrimaryBlue.withValues(alpha: 0.3)
+              : const Color(0xFFE2E8F0),
+          width: isActive ? 1.5 : 1,
+        ),
+        boxShadow: isActive
+            ? [
+                BoxShadow(
+                  color: _kPrimaryBlue.withValues(alpha: 0.1),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ]
+            : null,
+      ),
+      child: Row(
+        children: [
+          // Countdown section
+          Container(
+            width: 100,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: isActive
+                  ? LinearGradient(
+                      colors: [
+                        _kPrimaryBlue.withValues(alpha: 0.15),
+                        _kPrimaryBlue.withValues(alpha: 0.08),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    )
+                  : null,
+              color: isActive ? null : const Color(0xFFF1F5F9),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(20),
+                bottomLeft: Radius.circular(20),
+              ),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: isActive
+                            ? _kPrimaryBlue.withValues(alpha: 0.2)
+                            : const Color(0xFFE2E8F0),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Icon(
+                        Icons.timer_outlined,
+                        size: 12,
+                        color: isActive ? _kPrimaryBlue : _kMutedText,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Time',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: isActive ? _kPrimaryBlue : _kMutedText,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  widget.therapyCountdownRunning
+                      ? _formatCountdown(widget.therapyRemainingSeconds)
+                      : '--:--',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: isActive ? _kPrimaryBlue : const Color(0xFF64748B),
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Divider
+          Container(
+            width: 1,
+            height: 50,
+            margin: const EdgeInsets.symmetric(vertical: 18),
+            decoration: BoxDecoration(
+              gradient: isActive
+                  ? LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.transparent,
+                        const Color(0xFFBFDBFE),
+                        Colors.transparent,
+                      ],
+                    )
+                  : null,
+              color: isActive ? null : const Color(0xFFE2E8F0),
+            ),
+          ),
+          // Swipeable pattern section
+          Expanded(
+            child: ClipRRect(
+              borderRadius: const BorderRadius.only(
+                topRight: Radius.circular(20),
+                bottomRight: Radius.circular(20),
+              ),
+              child: Stack(
+                children: [
+                  PageView(
+                    controller: _pageController,
+                    onPageChanged: (index) {
+                      setState(() {
+                        _currentPage = index;
+                      });
+                    },
+                    children: [
+                      _TherapyPatternCard(
+                        label: 'Running Now',
+                        pattern: widget.currentPattern,
+                        icon: Icons.play_circle_filled,
+                        isActive: isActive,
+                        isHighlighted: true,
+                      ),
+                      _TherapyPatternCard(
+                        label: 'Next',
+                        pattern: widget.nextPattern,
+                        icon: Icons.schedule,
+                        isActive: false,
+                        isHighlighted: false,
+                      ),
+                    ],
+                  ),
+                  // Page indicators
+                  Positioned(
+                    bottom: 8,
+                    left: 0,
+                    right: 0,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _PageIndicator(isActive: _currentPage == 0),
+                        const SizedBox(width: 8),
+                        _PageIndicator(isActive: _currentPage == 1),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _ModeButton extends StatelessWidget {
@@ -1412,39 +1576,36 @@ class _IconModeButton extends StatelessWidget {
   }
 }
 
-class _TherapyPatternInfo extends StatelessWidget {
+class _TherapyPatternCard extends StatelessWidget {
   final String label;
   final String pattern;
-  final bool highlighted;
+  final IconData icon;
+  final bool isActive;
+  final bool isHighlighted;
 
-  const _TherapyPatternInfo({
+  const _TherapyPatternCard({
     required this.label,
     required this.pattern,
-    required this.highlighted,
+    required this.icon,
+    required this.isActive,
+    required this.isHighlighted,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      decoration: BoxDecoration(
-        color: highlighted ? const Color(0xFFEFF6FF) : const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: highlighted
-              ? const Color(0xFFBFDBFE)
-              : const Color(0xFFE2E8F0),
-        ),
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            label,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: _kMutedText,
+            label.toUpperCase(),
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              color: isHighlighted ? _kPrimaryBlue : _kMutedText,
+              letterSpacing: 1.2,
             ),
           ),
           const SizedBox(height: 4),
@@ -1453,12 +1614,46 @@ class _TherapyPatternInfo extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: 12,
+              fontSize: 17,
               fontWeight: FontWeight.w700,
-              color: highlighted ? _kPrimaryBlue : const Color(0xFF334155),
+              color: isHighlighted ? _kPrimaryBlue : const Color(0xFF1F2937),
+              letterSpacing: 0.3,
+              height: 1.2,
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PageIndicator extends StatelessWidget {
+  final bool isActive;
+
+  const _PageIndicator({required this.isActive});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+      width: isActive ? 24 : 6,
+      height: 6,
+      decoration: BoxDecoration(
+        gradient: isActive
+            ? LinearGradient(colors: [_kPrimaryBlue, const Color(0xFF1D4ED8)])
+            : null,
+        color: isActive ? null : const Color(0xFFCBD5E1),
+        borderRadius: BorderRadius.circular(3),
+        boxShadow: isActive
+            ? [
+                BoxShadow(
+                  color: _kPrimaryBlue.withValues(alpha: 0.4),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                ),
+              ]
+            : null,
       ),
     );
   }
