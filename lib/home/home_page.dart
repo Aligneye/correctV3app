@@ -140,8 +140,6 @@ class _HomeDashboardState extends State<HomeDashboard>
   int _therapyRemainingSeconds = 0;
   String _currentTherapyPattern = 'Waiting for therapy';
   String _nextTherapyPattern = 'Waiting for therapy';
-  bool _startupConnectPromptShown = false;
-  bool _startupConnectPromptOpen = false;
 
   static const List<_QuickMode> _quickModes = [
     _QuickMode(
@@ -218,7 +216,6 @@ class _HomeDashboardState extends State<HomeDashboard>
       });
     });
 
-    _scheduleStartupConnectPrompt();
   }
 
   @override
@@ -269,82 +266,6 @@ class _HomeDashboardState extends State<HomeDashboard>
         _therapyRemainingSeconds = 0;
       });
     }
-  }
-
-  void _scheduleStartupConnectPrompt() {
-    Future.delayed(const Duration(seconds: 4), () async {
-      if (!mounted || _startupConnectPromptShown) {
-        return;
-      }
-
-      // Wait for in-flight startup auto-connect to settle before prompting.
-      for (int attempt = 0; attempt < 20; attempt++) {
-        if (!mounted || _startupConnectPromptShown) {
-          return;
-        }
-        if (_deviceService.connectionStatus.value !=
-            DeviceConnectionStatus.connecting) {
-          break;
-        }
-        await Future.delayed(const Duration(seconds: 1));
-      }
-
-      if (!mounted || _startupConnectPromptShown) {
-        return;
-      }
-
-      final status = _deviceService.connectionStatus.value;
-      if (status == DeviceConnectionStatus.connected) {
-        _startupConnectPromptShown = true;
-        return;
-      }
-
-      if (status == DeviceConnectionStatus.connecting) {
-        // Still connecting after the grace period; recheck shortly.
-        _scheduleStartupConnectPrompt();
-        return;
-      }
-
-      _startupConnectPromptShown = true;
-      await _showStartupConnectPrompt();
-    });
-  }
-
-  Future<void> _showStartupConnectPrompt() async {
-    if (!mounted || _startupConnectPromptOpen) {
-      return;
-    }
-
-    _startupConnectPromptOpen = true;
-    final shouldConnect = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Connect device'),
-          content: const Text(
-            'No connected AlignEye device was found.\n\n'
-            'The app can try your paired device first, then connect to the nearest available device.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Not now'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Connect'),
-            ),
-          ],
-        );
-      },
-    );
-    _startupConnectPromptOpen = false;
-
-    if (!mounted || shouldConnect != true) {
-      return;
-    }
-
-    await _handleDeviceStatusTap();
   }
 
   Future<void> _handleDeviceStatusTap() async {
