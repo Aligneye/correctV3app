@@ -13,6 +13,7 @@ class AuthService {
           '187361659101-t4ddosvvllvpbln81olnnf73ql62euqv.apps.googleusercontent.com',
     ),
   );
+  static Map<String, dynamic>? _pendingLoginPrefill;
 
   static Future<void> signInWithEmail({
     required String email,
@@ -74,11 +75,31 @@ class AuthService {
     );
   }
 
-  static Future<void> signOut() async {
-    try {
-      await _googleSignIn.signOut();
-    } catch (_) {
-      // Ignore Google local sign-out errors and continue Supabase sign-out.
+  static void setPendingLoginPrefill({
+    required String email,
+    required String password,
+    bool showPassword = true,
+  }) {
+    _pendingLoginPrefill = {
+      'email': email,
+      'password': password,
+      'showPassword': showPassword,
+    };
+  }
+
+  static Map<String, dynamic>? consumePendingLoginPrefill() {
+    final value = _pendingLoginPrefill;
+    _pendingLoginPrefill = null;
+    return value;
+  }
+
+  static Future<void> signOut({bool includeGoogle = true}) async {
+    if (includeGoogle) {
+      try {
+        await _googleSignIn.signOut();
+      } catch (_) {
+        // Ignore Google local sign-out errors and continue Supabase sign-out.
+      }
     }
     await _auth.signOut();
   }

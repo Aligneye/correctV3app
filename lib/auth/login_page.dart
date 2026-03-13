@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -19,12 +21,48 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _postRecoveryCooldown = false;
+  Timer? _postRecoveryTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _applyPendingPrefill();
+  }
 
   @override
   void dispose() {
+    _postRecoveryTimer?.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  void _applyPendingPrefill() {
+    final result = AuthService.consumePendingLoginPrefill();
+    if (result == null) return;
+    final email = result['email'] as String?;
+    final password = result['password'] as String?;
+    final showPassword = result['showPassword'] as bool? ?? false;
+    setState(() {
+      if (email != null && email.isNotEmpty) {
+        _emailController.text = email;
+      }
+      if (password != null && password.isNotEmpty) {
+        _passwordController.text = password;
+        _obscurePassword = !showPassword;
+      }
+    });
+    _startPostRecoveryCooldown();
+  }
+
+  void _startPostRecoveryCooldown() {
+    _postRecoveryTimer?.cancel();
+    setState(() => _postRecoveryCooldown = true);
+    _postRecoveryTimer = Timer(const Duration(milliseconds: 900), () {
+      if (!mounted) return;
+      setState(() => _postRecoveryCooldown = false);
+    });
   }
 
   Future<void> _signInWithEmail() async {
@@ -138,9 +176,10 @@ class _LoginPageState extends State<LoginPage> {
                           TextFormField(
                             controller: _emailController,
                             keyboardType: TextInputType.emailAddress,
+                            textInputAction: TextInputAction.next,
                             autofillHints: const [
-                              AutofillHints.username,
                               AutofillHints.email,
+                              AutofillHints.username,
                             ],
                             decoration: const InputDecoration(
                               labelText: 'Email',
@@ -161,6 +200,7 @@ class _LoginPageState extends State<LoginPage> {
                           TextFormField(
                             controller: _passwordController,
                             obscureText: _obscurePassword,
+                            textInputAction: TextInputAction.done,
                             autofillHints: const [AutofillHints.password],
                             decoration: InputDecoration(
                               labelText: 'Password',
@@ -190,7 +230,7 @@ class _LoginPageState extends State<LoginPage> {
                           Align(
                             alignment: Alignment.centerRight,
                             child: TextButton(
-                              onPressed: _isLoading
+                              onPressed: _isLoading || _postRecoveryCooldown
                                   ? null
                                   : () {
                                       Navigator.of(context)
@@ -207,36 +247,17 @@ class _LoginPageState extends State<LoginPage> {
                                             ),
                                           )
                                           .then((result) {
-                                            if (result == null) return;
-                                            final email =
-                                                result['email'] as String?;
-                                            final password =
-                                                result['password'] as String?;
-                                            final showPassword =
-                                                result['showPassword']
-                                                    as bool? ??
-                                                false;
                                             if (!mounted) return;
-                                            setState(() {
-                                              if (email != null &&
-                                                  email.isNotEmpty) {
-                                                _emailController.text = email;
-                                              }
-                                              if (password != null &&
-                                                  password.isNotEmpty) {
-                                                _passwordController.text =
-                                                    password;
-                                                _obscurePassword =
-                                                    !showPassword;
-                                              }
-                                            });
+                                            _applyPendingPrefill();
                                           });
                                     },
                               child: const Text('Forgot password?'),
                             ),
                           ),
                           FilledButton(
-                            onPressed: _isLoading ? null : _signInWithEmail,
+                            onPressed: _isLoading || _postRecoveryCooldown
+                                ? null
+                                : _signInWithEmail,
                             child: _isLoading
                                 ? const SizedBox(
                                     width: 20,
@@ -250,7 +271,9 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                           const SizedBox(height: 12),
                           OutlinedButton.icon(
-                            onPressed: _isLoading ? null : _signInWithGoogle,
+                            onPressed: _isLoading || _postRecoveryCooldown
+                                ? null
+                                : _signInWithGoogle,
                             icon: const Icon(
                               Icons.g_mobiledata_rounded,
                               size: 28,
@@ -266,7 +289,7 @@ class _LoginPageState extends State<LoginPage> {
                       children: [
                         const Text("Don't have an account?"),
                         TextButton(
-                          onPressed: _isLoading
+                          onPressed: _isLoading || _postRecoveryCooldown
                               ? null
                               : () {
                                   Navigator.of(context).push(

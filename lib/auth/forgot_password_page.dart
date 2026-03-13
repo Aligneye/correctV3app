@@ -1,5 +1,6 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/auth/auth_service.dart';
@@ -22,6 +23,8 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   bool _isLoading = false;
   bool _otpSent = false;
   bool _otpVerified = false;
+  int _resendSecondsRemaining = 0;
+  Timer? _resendTimer;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
 
@@ -33,6 +36,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
 
   @override
   void dispose() {
+    _resendTimer?.cancel();
     _emailController.dispose();
     _otpController.dispose();
     _newPasswordController.dispose();
@@ -53,6 +57,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         _otpSent = true;
         _otpVerified = false;
       });
+      _startResendCountdown();
     } on AuthException catch (error) {
       _showSnackBar(error.message);
     } catch (_) {
@@ -85,24 +90,28 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   Future<void> _verifyOtpAndResetPassword() async {
     if (!_formKey.currentState!.validate()) return;
     if (!_otpVerified) {
-      _showSnackBar('Please verify OTP first.');
-      return;
+      final verified = await _verifyOtpInternal(showSuccessSnack: false);
+      if (!verified) return;
     }
     setState(() => _isLoading = true);
     try {
       final email = _emailController.text.trim();
       await AuthService.updatePassword(_newPasswordController.text);
-      TextInput.finishAutofillContext(shouldSave: true);
-      await AuthService.signOut();
+      AuthService.setPendingLoginPrefill(
+        email: email,
+        password: _newPasswordController.text,
+        showPassword: true,
+      );
+      final sessionCleared = await _clearRecoverySession();
+      if (!sessionCleared) {
+        _showSnackBar('Could not complete reset. Please try again.');
+        return;
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Password reset successful.')),
       );
-      Navigator.of(context).pop({
-        'email': email,
-        'password': _newPasswordController.text,
-        'showPassword': true,
-      });
+      Navigator.of(context).pop();
     } on AuthException catch (error) {
       _showSnackBar(error.message);
     } catch (_) {
@@ -114,34 +123,121 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     }
   }
 
-  Future<void> _verifyOtp() async {
+  Future<bool> _verifyOtpInternal({bool showSuccessSnack = true}) async {
     final email = _emailController.text.trim();
     final otp = _otpController.text.trim();
     if (email.isEmpty || !email.contains('@')) {
       _showSnackBar('Please enter a valid email.');
-      return;
+      return false;
     }
     if (otp.length < 6) {
       _showSnackBar('Please enter valid OTP.');
-      return;
+      return false;
     }
     setState(() => _isLoading = true);
     try {
       await AuthService.verifyRecoveryOtp(email: email, token: otp);
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() => _otpVerified = true);
-      _showSnackBar('OTP verified.');
+      if (showSuccessSnack) {
+        _showSnackBar('OTP verified.');
+      }
+      return true;
     } on AuthException catch (error) {
-      setState(() => _otpVerified = false);
+      if (mounted) {
+        setState(() => _otpVerified = false);
+      }
       _showSnackBar(error.message);
+      return false;
     } catch (_) {
-      setState(() => _otpVerified = false);
+      if (mounted) {
+        setState(() => _otpVerified = false);
+      }
       _showSnackBar('Could not verify OTP. Please try again.');
+      return false;
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
       }
     }
+  }
+
+  Future<void> _verifyOtp() async {
+    await _verifyOtpInternal(showSuccessSnack: true);
+  }
+
+  void _startResendCountdown() {
+    _resendTimer?.cancel();
+    setState(() => _resendSecondsRemaining = 60);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_resendSecondsRemaining <= 1) {
+        timer.cancel();
+        setState(() => _resendSecondsRemaining = 0);
+        return;
+      }
+      setState(() => _resendSecondsRemaining -= 1);
+    });
+  }
+
+  // mark OTP as unverified when source inputs change
+  void _invalidateOtpVerification() {
+    if (_otpVerified) {
+      setState(() => _otpVerified = false);
+    }
+  }
+
+  Future<void> _onResendOtpTap() async {
+    if (_resendSecondsRemaining > 0 || _isLoading) return;
+    await _sendResetLink();
+  }
+
+  Future<void> _handleBack() async {
+    // If recovery flow started, clear temporary auth session before leaving.
+    if (_otpSent || _otpVerified) {
+      try {
+        await AuthService.signOut(includeGoogle: false);
+      } catch (_) {
+        // No-op: we still allow navigation back.
+      }
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  Future<bool> _clearRecoverySession() async {
+    try {
+      await AuthService.signOut(includeGoogle: false);
+      // Wait briefly for auth state to settle before navigating.
+      for (int i = 0; i < 10; i++) {
+        if (Supabase.instance.client.auth.currentSession == null) {
+          return true;
+        }
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+      return Supabase.instance.client.auth.currentSession == null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _onEmailChanged(String _) async {
+    _invalidateOtpVerification();
+  }
+
+  Future<void> _onOtpChanged(String _) async {
+    _invalidateOtpVerification();
+  }
+
+  Future<void> _onPasswordChanged(String _) async {
+    _invalidateOtpVerification();
+  }
+
+  Future<void> _onConfirmPasswordChanged(String _) async {
+    _invalidateOtpVerification();
   }
 
   List<String> get _failedPasswordRules {
@@ -201,16 +297,22 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                 ),
                 child: ConstrainedBox(
                   constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                  child: AutofillGroup(
-                    child: Form(
-                      key: _formKey,
-                      child: Column(
+                  child: PopScope(
+                    canPop: false,
+                    onPopInvokedWithResult: (didPop, result) async {
+                      if (didPop) return;
+                      await _handleBack();
+                    },
+                    child: AutofillGroup(
+                      child: Form(
+                        key: _formKey,
+                        child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Align(
                           alignment: Alignment.centerLeft,
                           child: IconButton(
-                            onPressed: () => Navigator.of(context).pop(),
+                            onPressed: _handleBack,
                             icon: const Icon(Icons.arrow_back_rounded),
                           ),
                         ),
@@ -263,6 +365,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                               TextFormField(
                                 controller: _emailController,
                                 keyboardType: TextInputType.emailAddress,
+                                onChanged: _onEmailChanged,
                                 autofillHints: const [
                                   AutofillHints.username,
                                   AutofillHints.email,
@@ -287,6 +390,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                                 TextFormField(
                                   controller: _otpController,
                                   keyboardType: TextInputType.number,
+                                  onChanged: _onOtpChanged,
                                   decoration: InputDecoration(
                                     labelText: 'OTP',
                                     prefixIcon: const Icon(Icons.pin_outlined),
@@ -309,7 +413,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                                 TextFormField(
                                   controller: _newPasswordController,
                                   obscureText: _obscurePassword,
-                                  onChanged: (_) => setState(() {}),
+                                  onChanged: (value) {
+                                    setState(() {});
+                                    _onPasswordChanged(value);
+                                  },
                                   autofillHints: const [
                                     AutofillHints.newPassword,
                                   ],
@@ -349,6 +456,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                                 TextFormField(
                                   controller: _confirmPasswordController,
                                   obscureText: _obscureConfirmPassword,
+                                  onChanged: _onConfirmPasswordChanged,
                                   autofillHints: const [
                                     AutofillHints.newPassword,
                                   ],
@@ -401,14 +509,22 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                               if (_otpSent) ...[
                                 const SizedBox(height: 8),
                                 TextButton(
-                                  onPressed: _isLoading ? null : _sendResetLink,
-                                  child: const Text('Resend OTP'),
+                                  onPressed: _isLoading ||
+                                          _resendSecondsRemaining > 0
+                                      ? null
+                                      : _onResendOtpTap,
+                                  child: Text(
+                                    _resendSecondsRemaining > 0
+                                        ? 'Resend OTP in ${_resendSecondsRemaining}s'
+                                        : 'Resend OTP',
+                                  ),
                                 ),
                               ],
                             ],
                           ),
                         ),
                       ],
+                        ),
                       ),
                     ),
                   ),
