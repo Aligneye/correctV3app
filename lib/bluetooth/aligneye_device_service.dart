@@ -111,7 +111,9 @@ class PostureReading {
           json['is_calibrating'] == true ||
           json['is_calibrating']?.toString() == 'true',
       calibrationResult: json['calibration_result']?.toString() ?? '',
-      calibrationElapsedMs: toInt(json['c_elap'] ?? json['calibration_elapsed_ms']),
+      calibrationElapsedMs: toInt(
+        json['c_elap'] ?? json['calibration_elapsed_ms'],
+      ),
       calibrationTotalMs: toInt(json['c_tot'] ?? json['calibration_total_ms']),
       calibrationPhase: (json['c_phase']?.toString() ?? 'IDLE').toUpperCase(),
       posture: json['posture']?.toString() ?? 'UNKNOWN',
@@ -123,10 +125,16 @@ class PostureReading {
       difficultyDeg: toInt(json['difficulty_deg']),
       // Device sends shortened field names: t_patt, t_next, t_elap, t_rem
       // Also check for full names for backward compatibility
-      therapyPattern: (json['t_patt'] ?? json['therapy_pattern'])?.toString() ?? '',
-      therapyNextPattern: (json['t_next'] ?? json['therapy_next_pattern'])?.toString() ?? '',
-      therapyElapsedSeconds: toInt(json['t_elap'] ?? json['therapy_elapsed_sec']),
-      therapyRemainingSeconds: toInt(json['t_rem'] ?? json['therapy_remaining_sec']),
+      therapyPattern:
+          (json['t_patt'] ?? json['therapy_pattern'])?.toString() ?? '',
+      therapyNextPattern:
+          (json['t_next'] ?? json['therapy_next_pattern'])?.toString() ?? '',
+      therapyElapsedSeconds: toInt(
+        json['t_elap'] ?? json['therapy_elapsed_sec'],
+      ),
+      therapyRemainingSeconds: toInt(
+        json['t_rem'] ?? json['therapy_remaining_sec'],
+      ),
       timestamp: DateTime.now(),
     );
   }
@@ -156,6 +164,7 @@ class AlignEyeDeviceService {
   final connectionStatus = ValueNotifier<DeviceConnectionStatus>(
     DeviceConnectionStatus.disconnected,
   );
+  final isAutoConnectionAttempt = ValueNotifier<bool>(false);
   final currentReading = ValueNotifier<PostureReading?>(null);
 
   BluetoothDevice? _device;
@@ -172,6 +181,7 @@ class AlignEyeDeviceService {
   static const int _maxRetries = 1;
   static const Duration _connectionTimeout = Duration(seconds: 12);
   static const Duration _serviceDiscoveryTimeout = Duration(seconds: 8);
+  static const Duration _defaultScanTimeout = Duration(seconds: 3);
 
   bool get _isAndroid12OrAbove {
     if (!Platform.isAndroid) {
@@ -329,6 +339,7 @@ class AlignEyeDeviceService {
 
     _isConnecting = true;
     connectionStatus.value = DeviceConnectionStatus.connecting;
+    isAutoConnectionAttempt.value = isAutoConnect;
 
     // Set connection timeout
     _connectionTimeoutTimer?.cancel();
@@ -395,11 +406,9 @@ class AlignEyeDeviceService {
       final device = await _scanForDevice(
         preferredRemoteId: preferredDeviceId,
         preferPairedDevice: isAutoConnect,
-        prioritizePreferredDevice: isAutoConnect,
+        prioritizePreferredDevice: false,
         requirePairedDevice: isAutoConnect,
-        timeout: isAutoConnect
-            ? const Duration(seconds: 4)
-            : const Duration(seconds: 6),
+        timeout: _defaultScanTimeout,
       );
       if (device == null) {
         debugPrint('Device not found - scan returned null');
@@ -432,6 +441,7 @@ class AlignEyeDeviceService {
       // Check if device is paired/bonded
       var isPaired = await _isDevicePaired(_device!);
       debugPrint('Device is paired: $isPaired');
+      isAutoConnectionAttempt.value = isPaired;
 
       // For first-time devices, ask Android to create a bond before connection.
       if (!isPaired) {
@@ -663,14 +673,12 @@ class AlignEyeDeviceService {
 
     if (userInitiated) {
       _userInitiatedDisconnect = true;
-      // Save state: user manually disconnected
+      // Manual disconnect should fully forget the device and stop auto-connect.
       await _saveConnectionState(
         userManuallyDisconnected: true,
         clearLastConnectedDeviceId: true,
       );
-      debugPrint(
-        'User initiated disconnect - saved state to prevent auto-connect',
-      );
+      debugPrint('User initiated disconnect - cleared remembered device state');
     }
 
     // Clean up subscriptions first
@@ -699,12 +707,11 @@ class AlignEyeDeviceService {
       }
 
       if (userInitiated) {
-        debugPrint('User initiated disconnect - unpairing device...');
         try {
           await _unpairDevice(deviceToDisconnect);
-          debugPrint('Device unpaired successfully');
+          debugPrint('Device unpaired successfully after manual disconnect');
         } catch (e) {
-          debugPrint('Failed to unpair device: $e');
+          debugPrint('Failed to unpair device after manual disconnect: $e');
         }
       }
     }
@@ -713,6 +720,7 @@ class AlignEyeDeviceService {
     _notifyCharacteristic = null;
     currentReading.value = null; // Clear current reading on disconnect
     connectionStatus.value = DeviceConnectionStatus.disconnected;
+    isAutoConnectionAttempt.value = false;
 
     debugPrint('Disconnect completed');
   }
@@ -725,6 +733,7 @@ class AlignEyeDeviceService {
     await _readingController.close();
     await _cleanupScan();
     connectionStatus.dispose();
+    isAutoConnectionAttempt.dispose();
     currentReading.dispose();
   }
 
@@ -781,6 +790,33 @@ class AlignEyeDeviceService {
     }
   }
 
+  Future<bool> hasBondedTargetDevice() async {
+    try {
+      final bondedDevices = await FlutterBluePlus.bondedDevices;
+      return bondedDevices.any(
+        (device) => _matchesTargetDeviceName(device.platformName),
+      );
+    } catch (e) {
+      debugPrint('Error checking bonded target devices: $e');
+      return false;
+    }
+  }
+
+  Future<bool> hasUnpairedTargetDeviceNearby({
+    Duration timeout = _defaultScanTimeout,
+  }) async {
+    final device = await _scanForDevice(
+      preferPairedDevice: false,
+      prioritizePreferredDevice: false,
+      requirePairedDevice: false,
+      timeout: timeout,
+    );
+    if (device == null) {
+      return false;
+    }
+    return !(await _isDevicePaired(device));
+  }
+
   Future<bool> _requestPairing(BluetoothDevice device) async {
     if (defaultTargetPlatform != TargetPlatform.android) {
       // iOS handles BLE pairing implicitly based on characteristic permissions.
@@ -820,6 +856,19 @@ class AlignEyeDeviceService {
       debugPrint('Unexpected error during pairing request: $e');
       return false;
     }
+  }
+
+  Future<void> _unpairDevice(BluetoothDevice device) async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    final address = device.remoteId.toString();
+    if (address.isEmpty) {
+      return;
+    }
+
+    await _bondChannel.invokeMethod<bool>('removeBond', {'address': address});
   }
 
   Future<bool> _ensurePermissions() async {
@@ -874,23 +923,6 @@ class AlignEyeDeviceService {
     return true;
   }
 
-  Future<void> _unpairDevice(BluetoothDevice device) async {
-    if (defaultTargetPlatform != TargetPlatform.android) {
-      return;
-    }
-
-    try {
-      debugPrint('Attempting to remove bond for device: ${device.remoteId}');
-      await _bondChannel.invokeMethod<bool>('removeBond', {
-        'address': device.remoteId.toString(),
-      });
-    } on PlatformException catch (e) {
-      debugPrint('Platform exception while removing bond: ${e.message}');
-    } catch (e) {
-      debugPrint('Error unpairing device: $e');
-    }
-  }
-
   bool _matchesTargetDeviceName(String candidateName) {
     final normalizedName = candidateName.trim().toLowerCase();
     final normalizedPrefix = _deviceNamePrefix.trim().toLowerCase();
@@ -906,7 +938,7 @@ class AlignEyeDeviceService {
     bool preferPairedDevice = true,
     bool prioritizePreferredDevice = true,
     bool requirePairedDevice = false,
-    Duration timeout = const Duration(seconds: 5),
+    Duration timeout = _defaultScanTimeout,
   }) async {
     final normalizedPreferredId = preferredRemoteId?.toLowerCase();
 

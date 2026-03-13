@@ -140,6 +140,8 @@ class _HomeDashboardState extends State<HomeDashboard>
   int _therapyRemainingSeconds = 0;
   String _currentTherapyPattern = 'Waiting for therapy';
   String _nextTherapyPattern = 'Waiting for therapy';
+  bool _hasShownStartupConnectSheet = false;
+  bool _isFindingDevice = false;
 
   static const List<_QuickMode> _quickModes = [
     _QuickMode(
@@ -215,6 +217,8 @@ class _HomeDashboardState extends State<HomeDashboard>
             : 'Waiting for therapy';
       });
     });
+
+    unawaited(_handleStartupDevicePrompt());
 
   }
 
@@ -396,6 +400,178 @@ class _HomeDashboardState extends State<HomeDashboard>
     );
   }
 
+  Future<void> _handleStartupDevicePrompt() async {
+    await Future.delayed(const Duration(seconds: 4));
+    if (!mounted || _hasShownStartupConnectSheet) {
+      return;
+    }
+
+    if (_deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.disconnected) {
+      return;
+    }
+
+    final hasBondedTarget = await _deviceService.hasBondedTargetDevice();
+    if (!mounted || hasBondedTarget) {
+      return;
+    }
+
+    if (_deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.disconnected) {
+      return;
+    }
+
+    setState(() {
+      _isFindingDevice = true;
+    });
+    bool hasUnpairedNearby = false;
+    try {
+      hasUnpairedNearby = await _deviceService.hasUnpairedTargetDeviceNearby(
+        timeout: const Duration(seconds: 4),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isFindingDevice = false;
+        });
+      }
+    }
+    if (!mounted || !hasUnpairedNearby) {
+      return;
+    }
+
+    _hasShownStartupConnectSheet = true;
+    await _showStartupConnectBottomSheet();
+  }
+
+  Future<void> _showStartupConnectBottomSheet() {
+    bool isConnecting = false;
+    const popupPrimary = Color(0xFF008090);
+    const popupSecondaryBg = Color(0xFFE6F4F3);
+    return showModalBottomSheet<void>(
+      context: context,
+      isDismissible: true,
+      enableDrag: true,
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                child: SingleChildScrollView(
+                  child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Align Correct V1',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Nearby strongest signal detected. Tap Connect to pair and start.',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Color(0xFF64748B),
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Center(
+                      child: TweenAnimationBuilder<double>(
+                        tween: Tween<double>(begin: 0, end: 1),
+                        duration: const Duration(milliseconds: 650),
+                        curve: Curves.easeOutCubic,
+                        builder: (context, value, child) {
+                          final scale = 0.92 + (0.08 * value);
+                          return Opacity(
+                            opacity: value.clamp(0.0, 1.0),
+                            child: Transform.scale(scale: scale, child: child),
+                          );
+                        },
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(18),
+                          child: Image.asset(
+                            'assets/product.png',
+                            height: 170,
+                            fit: BoxFit.contain,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: isConnecting
+                                ? null
+                                : () => Navigator.of(context).pop(),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(46),
+                              backgroundColor: popupSecondaryBg,
+                              foregroundColor: popupPrimary,
+                              side: const BorderSide(color: popupPrimary),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text('Not now'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: isConnecting
+                                ? null
+                                : () {
+                                    setModalState(() => isConnecting = true);
+                                    Navigator.of(context).pop();
+                                    unawaited(_handleDeviceStatusTap());
+                                  },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: popupPrimary,
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size.fromHeight(46),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: isConnecting
+                                ? const SizedBox(
+                                    height: 18,
+                                    width: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Text('Connect'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _syncModeControlToDevice({
     required _ModeControlType mode,
     required _PostureTimingType postureTiming,
@@ -475,10 +651,17 @@ class _HomeDashboardState extends State<HomeDashboard>
                 child: ValueListenableBuilder<DeviceConnectionStatus>(
                   valueListenable: _deviceService.connectionStatus,
                   builder: (context, connectionStatus, child) {
-                    return _DeviceStatusCard(
-                      status: connectionStatus,
-                      batteryLevel: _batteryLevel,
-                      onTap: _handleDeviceStatusTap,
+                    return ValueListenableBuilder<bool>(
+                      valueListenable: _deviceService.isAutoConnectionAttempt,
+                      builder: (context, isAutoConnectionAttempt, child) {
+                        return _DeviceStatusCard(
+                          status: connectionStatus,
+                          isAutoConnectionAttempt: isAutoConnectionAttempt,
+                          isFindingDevice: _isFindingDevice,
+                          batteryLevel: _batteryLevel,
+                          onTap: _handleDeviceStatusTap,
+                        );
+                      },
                     );
                   },
                 ),
@@ -664,11 +847,15 @@ class _DashboardHeader extends StatelessWidget {
 
 class _DeviceStatusCard extends StatelessWidget {
   final DeviceConnectionStatus status;
+  final bool isAutoConnectionAttempt;
+  final bool isFindingDevice;
   final int batteryLevel;
   final VoidCallback onTap;
 
   const _DeviceStatusCard({
     required this.status,
+    required this.isAutoConnectionAttempt,
+    required this.isFindingDevice,
     required this.batteryLevel,
     required this.onTap,
   });
@@ -677,15 +864,18 @@ class _DeviceStatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isConnected = status == DeviceConnectionStatus.connected;
     final isConnecting = status == DeviceConnectionStatus.connecting;
-    final statusText = isConnecting
-        ? 'Connecting...'
+    final statusText = isFindingDevice
+        ? 'Finding device'
+        : isConnecting
+        ? (isAutoConnectionAttempt ? 'Auto connecting' : 'Connecting')
         : isConnected
         ? 'Connected'
         : 'Disconnected';
-    final statusColor = isConnecting ? const Color(0xFFF59E0B) : _kPrimaryBlue;
+    final statusColor =
+        (isConnecting || isFindingDevice) ? const Color(0xFFF59E0B) : _kPrimaryBlue;
     final iconColor = isConnected
         ? _kPrimaryBlue
-        : isConnecting
+        : (isConnecting || isFindingDevice)
         ? const Color(0xFFF59E0B)
         : Colors.grey.shade400;
     final batteryTierColor = _batteryTierColor(batteryLevel);
@@ -732,7 +922,9 @@ class _DeviceStatusCard extends StatelessWidget {
                             statusText,
                             key: ValueKey(statusText),
                             style: TextStyle(
-                              color: isConnecting ? statusColor : iconColor,
+                              color: (isConnecting || isFindingDevice)
+                                  ? statusColor
+                                  : iconColor,
                               fontWeight: FontWeight.w600,
                               fontSize: 14,
                             ),
@@ -744,7 +936,7 @@ class _DeviceStatusCard extends StatelessWidget {
                 ),
                 Row(
                   children: [
-                    if (isConnecting) ...[
+                    if (isConnecting || isFindingDevice) ...[
                       const SizedBox(
                         height: 16,
                         width: 16,

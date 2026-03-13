@@ -16,6 +16,9 @@ class BluetoothServiceManager {
   bool _isMonitoring = false;
 
   static const Duration _reconnectInterval = Duration(seconds: 3);
+  static const Duration _maxReconnectInterval = Duration(seconds: 60);
+  static const int _reconnectJitterMs = 500;
+  int _reconnectFailureCount = 0;
 
   AlignEyeDeviceService get deviceService => _deviceService;
 
@@ -34,6 +37,13 @@ class BluetoothServiceManager {
       );
 
       if (currentStatus == DeviceConnectionStatus.disconnected) {
+        final hasBondedTarget = await _deviceService.hasBondedTargetDevice();
+        if (!hasBondedTarget) {
+          debugPrint(
+            'BluetoothServiceManager: No paired target device found, skipping startup auto-connect',
+          );
+          return;
+        }
         debugPrint(
           'BluetoothServiceManager: Status is disconnected, calling tryAutoConnect()...',
         );
@@ -111,13 +121,26 @@ class BluetoothServiceManager {
 
     if (status == DeviceConnectionStatus.disconnected && !_isAutoReconnecting) {
       debugPrint('Bluetooth disconnected, checking if should reconnect...');
-      _scheduleReconnect();
+      unawaited(_scheduleReconnectIfEligible());
     } else if (status == DeviceConnectionStatus.connected) {
       _reconnectTimer?.cancel();
       _reconnectTimer = null;
       _isAutoReconnecting = false;
+      _reconnectFailureCount = 0;
       debugPrint('Bluetooth connected successfully');
     }
+  }
+
+  Future<void> _scheduleReconnectIfEligible() async {
+    final hasBondedTarget = await _deviceService.hasBondedTargetDevice();
+    if (!hasBondedTarget) {
+      debugPrint(
+        'Skipping auto-reconnect scheduling: no paired target device is available',
+      );
+      _reconnectFailureCount = 0;
+      return;
+    }
+    _scheduleReconnect();
   }
 
   Future<void> _attemptConnection() async {
@@ -148,9 +171,21 @@ class BluetoothServiceManager {
     if (!_shouldMaintainConnection) return;
     if (_reconnectTimer != null) return;
 
-    debugPrint('Scheduling auto-reconnect in ${_reconnectInterval.inSeconds}s');
+    final baseDelayMs =
+        _reconnectInterval.inMilliseconds * (1 << _reconnectFailureCount);
+    final cappedDelayMs = baseDelayMs > _maxReconnectInterval.inMilliseconds
+        ? _maxReconnectInterval.inMilliseconds
+        : baseDelayMs;
+    final jitterMs = DateTime.now().millisecondsSinceEpoch %
+        (_reconnectJitterMs + 1);
+    final effectiveDelayMs = cappedDelayMs + jitterMs;
 
-    _reconnectTimer = Timer(_reconnectInterval, () async {
+    debugPrint(
+      'Scheduling auto-reconnect in ${effectiveDelayMs}ms '
+      '(failureCount=$_reconnectFailureCount)',
+    );
+
+    _reconnectTimer = Timer(Duration(milliseconds: effectiveDelayMs), () async {
       _reconnectTimer = null;
 
       if (!_shouldMaintainConnection) {
@@ -175,6 +210,9 @@ class BluetoothServiceManager {
       if (_deviceService.connectionStatus.value !=
               DeviceConnectionStatus.connected &&
           _shouldMaintainConnection) {
+        if (_reconnectFailureCount < 20) {
+          _reconnectFailureCount++;
+        }
         _scheduleReconnect();
       }
     });
