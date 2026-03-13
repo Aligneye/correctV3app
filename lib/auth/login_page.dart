@@ -22,6 +22,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _isLoading = false;
   bool _obscurePassword = true;
   bool _postRecoveryCooldown = false;
+  bool _ignoreNextGoogleTapAfterPrefill = false;
   Timer? _postRecoveryTimer;
 
   @override
@@ -51,6 +52,7 @@ class _LoginPageState extends State<LoginPage> {
       if (password != null && password.isNotEmpty) {
         _passwordController.text = password;
         _obscurePassword = !showPassword;
+        _ignoreNextGoogleTapAfterPrefill = true;
       }
     });
     _startPostRecoveryCooldown();
@@ -86,6 +88,13 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _signInWithGoogle() async {
+    if (_ignoreNextGoogleTapAfterPrefill) {
+      setState(() => _ignoreNextGoogleTapAfterPrefill = false);
+      _showSnackBar(
+        'Tap Continue with Google again if you want Google sign-in.',
+      );
+      return;
+    }
     setState(() => _isLoading = true);
     try {
       await AuthService.signInWithGoogle();
