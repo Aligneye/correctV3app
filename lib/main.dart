@@ -36,9 +36,9 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'align',
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.system,
+      themeMode: ThemeMode.light,
       theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
+      darkTheme: AppTheme.lightTheme,
       home: isSupabaseConfigured
           ? const AuthGate()
           : const _SupabaseConfigMissingPage(),

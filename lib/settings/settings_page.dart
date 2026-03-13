@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/auth/auth_service.dart';
+import 'package:correctv1/theme/app_theme.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -12,13 +13,10 @@ class SettingsPage extends StatelessWidget {
     final user = Supabase.instance.client.auth.currentUser;
 
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Container(
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [scheme.primaryContainer, Theme.of(context).scaffoldBackgroundColor],
-          ),
+          gradient: AppTheme.pageBackgroundGradientFor(context),
         ),
         child: SafeArea(
           child: Padding(

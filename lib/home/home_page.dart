@@ -10,20 +10,16 @@ import 'package:correctv1/discover/discover_page.dart';
 import 'package:correctv1/settings/settings_page.dart';
 import 'package:correctv1/components/nav_bar.dart';
 import 'package:correctv1/calibration/calibration_page.dart';
+import 'package:correctv1/theme/app_theme.dart';
 
-const _kPagePadding = EdgeInsets.fromLTRB(24, 48, 24, 100);
+const _kPagePadding = EdgeInsets.fromLTRB(24, 24, 24, 100);
 const _kSectionSpacing = SizedBox(height: 24);
 const _kHeaderSpacing = SizedBox(height: 32);
 const _kInnerSpacing = SizedBox(height: 16);
-const _kPrimaryBlue = Color(0xFF008090);
+const _kPrimaryBlue = AppTheme.brandPrimary;
 const _kMutedText = Color(0xFF6B7C84);
-const _kPrimaryGreen = Color(0xFF14B8A6);
+const _kPrimaryGreen = AppTheme.brandSecondary;
 const _kBadPostureRed = Color(0xFFEF4444);
-const _kDashboardBackground = LinearGradient(
-  begin: Alignment.topLeft,
-  end: Alignment.bottomRight,
-  colors: [Color(0xFFE6F7F5), Color(0xFFF6FAFB), Color(0xFFEAF7F8)],
-);
 
 enum _ModeControlType { track, posture, therapy }
 
@@ -634,7 +630,9 @@ class _HomeDashboardState extends State<HomeDashboard>
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(gradient: _kDashboardBackground),
+      decoration: BoxDecoration(
+        gradient: AppTheme.pageBackgroundGradientFor(context),
+      ),
       child: SafeArea(
         bottom: false, // Let content flow behind navbar
         child: SingleChildScrollView(
@@ -840,6 +838,8 @@ class _DashboardHeader extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Image.asset('assets/logo HQ.png', height: 52, fit: BoxFit.contain),
+        const SizedBox(height: 8),
         Text(
           'Welcome back',
           style: TextStyle(color: Colors.grey[500], fontSize: 14),

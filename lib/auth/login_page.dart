@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:correctv1/auth/auth_service.dart';
 import 'package:correctv1/auth/forgot_password_page.dart';
 import 'package:correctv1/auth/signup_page.dart';
+import 'package:correctv1/theme/app_theme.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -123,23 +124,21 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Container(
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [scheme.primaryContainer, Theme.of(context).scaffoldBackgroundColor],
-          ),
+          gradient: AppTheme.pageBackgroundGradientFor(context),
         ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-            child: AutofillGroup(
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+        child: SizedBox.expand(
+          child: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              child: AutofillGroup(
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
                     const SizedBox(height: 10),
                     Center(
                       child: Image.asset(
@@ -297,7 +296,10 @@ class _LoginPageState extends State<LoginPage> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Text("Don't have an account?"),
+                        Text(
+                          "Don't have an account?",
+                          style: TextStyle(color: scheme.onSurfaceVariant),
+                        ),
                         TextButton(
                           onPressed: _isLoading || _postRecoveryCooldown
                               ? null
@@ -317,7 +319,8 @@ class _LoginPageState extends State<LoginPage> {
                         ),
                       ],
                     ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/auth/auth_service.dart';
+import 'package:correctv1/theme/app_theme.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
   final String initialEmail;
@@ -279,13 +280,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Container(
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [scheme.primaryContainer, Theme.of(context).scaffoldBackgroundColor],
-          ),
+          gradient: AppTheme.pageBackgroundGradientFor(context),
         ),
         child: SafeArea(
           child: LayoutBuilder(
@@ -309,8 +307,8 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                       child: Form(
                         key: _formKey,
                         child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
                         Align(
                           alignment: Alignment.centerLeft,
                           child: IconButton(
@@ -525,12 +523,12 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                             ],
                           ),
                         ),
-                      ],
-                        ),
+                        ],
                       ),
                     ),
                   ),
                 ),
+              ),
               );
             },
           ),

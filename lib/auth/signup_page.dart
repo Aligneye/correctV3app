@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/auth/auth_service.dart';
+import 'package:correctv1/theme/app_theme.dart';
 
 class SignupPage extends StatefulWidget {
   final String initialEmail;
@@ -152,23 +153,21 @@ class _SignupPageState extends State<SignupPage> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Container(
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [scheme.primaryContainer, Theme.of(context).scaffoldBackgroundColor],
-          ),
+          gradient: AppTheme.pageBackgroundGradientFor(context),
         ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-            child: AutofillGroup(
-              child: Form(
-                key: _formKey,
-                child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+        child: SizedBox.expand(
+          child: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              child: AutofillGroup(
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
                   Align(
                     alignment: Alignment.centerLeft,
                     child: IconButton(
@@ -313,12 +312,13 @@ class _SignupPageState extends State<SignupPage> {
                       ],
                     ),
                   ),
-                ],
-                ),
+                    ],
+                  ),
               ),
             ),
           ),
         ),
+      ),
       ),
     );
   }
