@@ -8,15 +8,16 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final user = Supabase.instance.client.auth.currentUser;
 
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFE6F7F5), Color(0xFFF4FBFA)],
+            colors: [scheme.primaryContainer, Theme.of(context).scaffoldBackgroundColor],
           ),
         ),
         child: SafeArea(
@@ -26,24 +27,24 @@ class SettingsPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 12),
-                const Text(
+                Text(
                   'Settings',
                   style: TextStyle(
                     fontSize: 30,
                     fontWeight: FontWeight.w800,
-                    color: Color(0xFF0F172A),
+                    color: scheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
+                Text(
                   'Manage your account and app preferences',
-                  style: TextStyle(color: Color(0xFF64748B), fontSize: 14),
+                  style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 14),
                 ),
                 const SizedBox(height: 20),
                 Container(
                   padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: scheme.surface,
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: const [
                       BoxShadow(
@@ -62,12 +63,12 @@ class SettingsPage extends StatelessWidget {
                             width: 48,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: const Color(0xFFD7F3EF),
+                              color: scheme.primaryContainer,
                               borderRadius: BorderRadius.circular(14),
                             ),
-                            child: const Icon(
+                            child: Icon(
                               Icons.person_outline_rounded,
-                              color: Color(0xFF1F7A6F),
+                              color: scheme.primary,
                             ),
                           ),
                           const SizedBox(width: 12),
@@ -75,18 +76,18 @@ class SettingsPage extends StatelessWidget {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text(
+                                Text(
                                   'Signed in account',
                                   style: TextStyle(
-                                    color: Color(0xFF64748B),
+                                    color: scheme.onSurfaceVariant,
                                     fontSize: 12,
                                   ),
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
                                   user?.email ?? 'No email found',
-                                  style: const TextStyle(
-                                    color: Color(0xFF0F172A),
+                                  style: TextStyle(
+                                    color: scheme.onSurface,
                                     fontSize: 15,
                                     fontWeight: FontWeight.w600,
                                   ),

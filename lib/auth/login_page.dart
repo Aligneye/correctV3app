@@ -121,13 +121,14 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFE6F7F5), Color(0xFFF4FBFA)],
+            colors: [scheme.primaryContainer, Theme.of(context).scaffoldBackgroundColor],
           ),
         ),
         child: SafeArea(
@@ -154,7 +155,7 @@ class _LoginPageState extends State<LoginPage> {
                       style: Theme.of(context).textTheme.headlineSmall
                           ?.copyWith(
                             fontWeight: FontWeight.w800,
-                            color: const Color(0xFF0F172A),
+                            color: scheme.onSurface,
                           ),
                     ),
                     const SizedBox(height: 6),
@@ -162,14 +163,14 @@ class _LoginPageState extends State<LoginPage> {
                       'Log in to track and improve your posture.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: const Color(0xFF64748B),
+                        color: scheme.onSurfaceVariant,
                       ),
                     ),
                     const SizedBox(height: 20),
                     Container(
                       padding: const EdgeInsets.all(18),
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: scheme.surface,
                         borderRadius: BorderRadius.circular(20),
                         boxShadow: const [
                           BoxShadow(

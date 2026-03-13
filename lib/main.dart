@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/auth/auth_gate.dart';
 import 'package:correctv1/home/home_page.dart';
+import 'package:correctv1/theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,56 +36,9 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'align',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2A9D8F),
-          secondary: const Color(0xFF14B8A6),
-          surface: const Color(0xFFF4FBFA),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF4FBFA),
-        fontFamily: 'Roboto',
-        appBarTheme: const AppBarTheme(
-          elevation: 0,
-          centerTitle: true,
-          backgroundColor: Colors.transparent,
-          foregroundColor: Color(0xFF0F172A),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: Color(0xFF2A9D8F), width: 1.2),
-          ),
-        ),
-        filledButtonTheme: FilledButtonThemeData(
-          style: FilledButton.styleFrom(
-            minimumSize: const Size.fromHeight(52),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
-          ),
-        ),
-        outlinedButtonTheme: OutlinedButtonThemeData(
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size.fromHeight(52),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
-            side: const BorderSide(color: Color(0xFFCBD5E1)),
-          ),
-        ),
-      ),
+      themeMode: ThemeMode.system,
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
       home: isSupabaseConfigured
           ? const AuthGate()
           : const _SupabaseConfigMissingPage(),

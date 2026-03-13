@@ -13,12 +13,13 @@ class ModernNavBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return SafeArea(
       bottom: true,
       child: Container(
         constraints: const BoxConstraints(minHeight: 68, maxHeight: 68),
-        decoration: const BoxDecoration(
-          color: Colors.white,
+        decoration: BoxDecoration(
+          color: scheme.surface,
           boxShadow: [
             BoxShadow(
               color: Color(0x14000000),
@@ -26,7 +27,7 @@ class ModernNavBar extends StatelessWidget {
               offset: Offset(0, -2),
             ),
           ],
-          border: Border(top: BorderSide(color: Color(0xFFE2E8F0), width: 1)),
+          border: Border(top: BorderSide(color: scheme.outline, width: 1)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -111,9 +112,10 @@ class _NavItemState extends State<_NavItem>
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final isSelected = widget.selectedIndex == widget.index;
-    const activeColor = Color(0xFF2563EB);
-    const inactiveColor = Color(0xFF64748B);
+    final activeColor = scheme.primary;
+    final inactiveColor = scheme.onSurfaceVariant;
 
     return GestureDetector(
       onTapDown: (_) => _controller.forward(),

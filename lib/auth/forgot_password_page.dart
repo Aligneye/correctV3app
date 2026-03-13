@@ -255,19 +255,20 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   }
 
   Widget _ruleItem(String text) {
+    final scheme = Theme.of(context).colorScheme;
     return Row(
       children: [
-        const Icon(
+        Icon(
           Icons.cancel_rounded,
           size: 16,
-          color: Color(0xFFEF4444),
+          color: scheme.error,
         ),
         const SizedBox(width: 6),
         Text(
           text,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 12,
-            color: Color(0xFFB91C1C),
+            color: scheme.error,
           ),
         ),
       ],
@@ -276,13 +277,14 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFE6F7F5), Color(0xFFF4FBFA)],
+            colors: [scheme.primaryContainer, Theme.of(context).scaffoldBackgroundColor],
           ),
         ),
         child: SafeArea(
@@ -320,7 +322,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                         Container(
                           padding: const EdgeInsets.all(18),
                           decoration: BoxDecoration(
-                            color: Colors.white,
+                            color: scheme.surface,
                             borderRadius: BorderRadius.circular(20),
                             boxShadow: const [
                               BoxShadow(
@@ -333,9 +335,9 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              const Icon(
+                              Icon(
                                 Icons.mark_email_unread_outlined,
-                                color: Color(0xFF2A9D8F),
+                                color: scheme.primary,
                                 size: 34,
                               ),
                               const SizedBox(height: 12),
@@ -346,7 +348,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                                   context,
                                 ).textTheme.headlineSmall?.copyWith(
                                   fontWeight: FontWeight.w800,
-                                  color: const Color(0xFF0F172A),
+                                  color: scheme.onSurface,
                                 ),
                               ),
                               const SizedBox(height: 8),
@@ -358,7 +360,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                                 style: Theme.of(
                                   context,
                                 ).textTheme.bodyMedium?.copyWith(
-                                  color: const Color(0xFF64748B),
+                                  color: scheme.onSurfaceVariant,
                                 ),
                               ),
                               const SizedBox(height: 20),

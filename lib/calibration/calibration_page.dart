@@ -257,7 +257,7 @@ class _CalibrationPageState extends State<CalibrationPage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0E17),
+      backgroundColor: const Color(0xFF0D1A1D),
       body: SafeArea(
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 400),
@@ -283,7 +283,7 @@ class _CalibrationPageState extends State<CalibrationPage>
           title: 'Starting',
           message: 'Preparing your device...',
           icon: Icons.bluetooth_searching_rounded,
-          color: const Color(0xFF3B82F6),
+          color: const Color(0xFF008090),
         );
       case _CalibrationStage.getReady:
         return _GetReadyScreen(
@@ -317,7 +317,7 @@ class _CalibrationPageState extends State<CalibrationPage>
         return _ResultScreen(
           key: const ValueKey('success'),
           icon: Icons.check_circle_rounded,
-          color: const Color(0xFF22C55E),
+          color: const Color(0xFF14B8A6),
           title: 'Calibration Complete',
           message: 'Your ideal posture has been saved.\nPosture tracking started.',
           subText: 'Auto return → Training Screen',
@@ -387,7 +387,7 @@ class _IntroScreen extends StatelessWidget {
             child: Column(
               children: [
                 Icon(Icons.airline_seat_recline_normal_rounded,
-                    size: 48, color: const Color(0xFF3B82F6).withOpacity(0.9)),
+                    size: 48, color: const Color(0xFF008090).withOpacity(0.9)),
                 const SizedBox(height: 16),
                 Text(
                   'Sit comfortably in your natural upright posture.\nKeep your back straight and shoulders relaxed.',
@@ -408,7 +408,7 @@ class _IntroScreen extends StatelessWidget {
             child: FilledButton(
               onPressed: onStart,
               style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF3B82F6),
+                backgroundColor: const Color(0xFF008090),
                 foregroundColor: Colors.white,
                 elevation: 0,
                 shape: RoundedRectangleBorder(
@@ -794,7 +794,7 @@ class _ResultScreen extends StatelessWidget {
               child: FilledButton(
                 onPressed: onPrimary,
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF3B82F6),
+                  backgroundColor: const Color(0xFF008090),
                   foregroundColor: Colors.white,
                   elevation: 0,
                   shape: RoundedRectangleBorder(

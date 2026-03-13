@@ -5,8 +5,9 @@ class ArogyamPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.grey[50],
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -14,7 +15,7 @@ class ArogyamPage extends StatelessWidget {
             Icon(
               Icons.health_and_safety_rounded,
               size: 64,
-              color: Colors.green[600],
+              color: scheme.secondary,
             ),
             const SizedBox(height: 16),
             Text(
@@ -22,13 +23,13 @@ class ArogyamPage extends StatelessWidget {
               style: TextStyle(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
-                color: Colors.grey[800],
+                color: scheme.onSurface,
               ),
             ),
             const SizedBox(height: 8),
             Text(
               "Wellness & Health",
-              style: TextStyle(color: Colors.grey[600]),
+              style: TextStyle(color: scheme.onSurfaceVariant),
             ),
           ],
         ),

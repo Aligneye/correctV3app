@@ -15,14 +15,14 @@ const _kPagePadding = EdgeInsets.fromLTRB(24, 48, 24, 100);
 const _kSectionSpacing = SizedBox(height: 24);
 const _kHeaderSpacing = SizedBox(height: 32);
 const _kInnerSpacing = SizedBox(height: 16);
-const _kPrimaryBlue = Color(0xFF2563EB);
-const _kMutedText = Color(0xFF94A3B8);
-const _kPrimaryGreen = Color(0xFF10B981);
+const _kPrimaryBlue = Color(0xFF008090);
+const _kMutedText = Color(0xFF6B7C84);
+const _kPrimaryGreen = Color(0xFF14B8A6);
 const _kBadPostureRed = Color(0xFFEF4444);
 const _kDashboardBackground = LinearGradient(
   begin: Alignment.topLeft,
   end: Alignment.bottomRight,
-  colors: [Color(0xFFEFF6FF), Colors.white, Color(0xFFFAF5FF)],
+  colors: [Color(0xFFE6F7F5), Color(0xFFF6FAFB), Color(0xFFEAF7F8)],
 );
 
 enum _ModeControlType { track, posture, therapy }
@@ -88,7 +88,7 @@ class _HomePageState extends State<HomePage> {
       // But for other pages we might need a background.
       // For now, let's keep the Scaffold background simple or transparent if pages handle it.
       // The React code showed a full page gradient for Home.
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: PageView(
         controller: _pageController,
         onPageChanged: (index) {
@@ -147,25 +147,25 @@ class _HomeDashboardState extends State<HomeDashboard>
     _QuickMode(
       title: 'Tracking',
       icon: Icons.graphic_eq,
-      gradient: [Color(0xFF60A5FA), Color(0xFF06B6D4)],
+      gradient: [Color(0xFF0EA5A4), Color(0xFF008090)],
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Training',
       icon: Icons.flash_on,
-      gradient: [Color(0xFFC084FC), Color(0xFFEC4899)],
+      gradient: [Color(0xFF14B8A6), Color(0xFF0F766E)],
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Therapy',
       icon: Icons.favorite,
-      gradient: [Color(0xFFFB7185), Color(0xFFEF4444)],
+      gradient: [Color(0xFF2DD4BF), Color(0xFF0E7490)],
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Meditate',
       icon: Icons.self_improvement,
-      gradient: [Color(0xFF818CF8), Color(0xFF3B82F6)],
+      gradient: [Color(0xFF22D3EE), Color(0xFF0891B2)],
       targetIndex: 1,
     ),
   ];
@@ -219,7 +219,6 @@ class _HomeDashboardState extends State<HomeDashboard>
     });
 
     unawaited(_handleStartupDevicePrompt());
-
   }
 
   @override
@@ -466,102 +465,107 @@ class _HomeDashboardState extends State<HomeDashboard>
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
                 child: SingleChildScrollView(
                   child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Align Correct V1',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF0F172A),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Nearby strongest signal detected. Tap Connect to pair and start.',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Color(0xFF64748B),
-                        height: 1.35,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Center(
-                      child: TweenAnimationBuilder<double>(
-                        tween: Tween<double>(begin: 0, end: 1),
-                        duration: const Duration(milliseconds: 650),
-                        curve: Curves.easeOutCubic,
-                        builder: (context, value, child) {
-                          final scale = 0.92 + (0.08 * value);
-                          return Opacity(
-                            opacity: value.clamp(0.0, 1.0),
-                            child: Transform.scale(scale: scale, child: child),
-                          );
-                        },
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(18),
-                          child: Image.asset(
-                            'assets/product.png',
-                            height: 170,
-                            fit: BoxFit.contain,
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Center(
+                        child: Text(
+                          'Align Correct V1',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF0F172A),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 18),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: isConnecting
-                                ? null
-                                : () => Navigator.of(context).pop(),
-                            style: OutlinedButton.styleFrom(
-                              minimumSize: const Size.fromHeight(46),
-                              backgroundColor: popupSecondaryBg,
-                              foregroundColor: popupPrimary,
-                              side: const BorderSide(color: popupPrimary),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Straighten up. Your future self will thank you.',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF64748B),
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Center(
+                        child: TweenAnimationBuilder<double>(
+                          tween: Tween<double>(begin: 0, end: 1),
+                          duration: const Duration(milliseconds: 650),
+                          curve: Curves.easeOutCubic,
+                          builder: (context, value, child) {
+                            final scale = 0.92 + (0.08 * value);
+                            return Opacity(
+                              opacity: value.clamp(0.0, 1.0),
+                              child: Transform.scale(
+                                scale: scale,
+                                child: child,
                               ),
+                            );
+                          },
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(18),
+                            child: Image.asset(
+                              'assets/product.png',
+                              height: 170,
+                              fit: BoxFit.contain,
                             ),
-                            child: const Text('Not now'),
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: isConnecting
-                                ? null
-                                : () {
-                                    setModalState(() => isConnecting = true);
-                                    Navigator.of(context).pop();
-                                    unawaited(_handleDeviceStatusTap());
-                                  },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: popupPrimary,
-                              foregroundColor: Colors.white,
-                              minimumSize: const Size.fromHeight(46),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+                      ),
+                      const SizedBox(height: 18),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: isConnecting
+                                  ? null
+                                  : () => Navigator.of(context).pop(),
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size.fromHeight(46),
+                                backgroundColor: popupSecondaryBg,
+                                foregroundColor: popupPrimary,
+                                side: const BorderSide(color: popupPrimary),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
                               ),
+                              child: const Text('Not now'),
                             ),
-                            child: isConnecting
-                                ? const SizedBox(
-                                    height: 18,
-                                    width: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Text('Connect'),
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: isConnecting
+                                  ? null
+                                  : () {
+                                      setModalState(() => isConnecting = true);
+                                      Navigator.of(context).pop();
+                                      unawaited(_handleDeviceStatusTap());
+                                    },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: popupPrimary,
+                                foregroundColor: Colors.white,
+                                minimumSize: const Size.fromHeight(46),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              child: isConnecting
+                                  ? const SizedBox(
+                                      height: 18,
+                                      width: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : const Text('Connect'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -871,8 +875,9 @@ class _DeviceStatusCard extends StatelessWidget {
         : isConnected
         ? 'Connected'
         : 'Disconnected';
-    final statusColor =
-        (isConnecting || isFindingDevice) ? const Color(0xFFF59E0B) : _kPrimaryBlue;
+    final statusColor = (isConnecting || isFindingDevice)
+        ? const Color(0xFFF59E0B)
+        : _kPrimaryBlue;
     final iconColor = isConnected
         ? _kPrimaryBlue
         : (isConnecting || isFindingDevice)
@@ -899,7 +904,7 @@ class _DeviceStatusCard extends StatelessWidget {
                       width: 40,
                       height: 40,
                       decoration: BoxDecoration(
-                        color: const Color(0xFFE0ECFF),
+                        color: const Color(0xFFDDF3F1),
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: Icon(Icons.bluetooth, color: iconColor, size: 20),
@@ -1412,7 +1417,7 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
       decoration: BoxDecoration(
         gradient: isActive
             ? LinearGradient(
-                colors: [const Color(0xFFEFF6FF), const Color(0xFFF0F9FF)],
+                colors: [const Color(0xFFE6F7F5), const Color(0xFFEAF7F8)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               )
@@ -1518,7 +1523,7 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
                       end: Alignment.bottomCenter,
                       colors: [
                         Colors.transparent,
-                        const Color(0xFFBFDBFE),
+                        const Color(0xFFBDEBE7),
                         Colors.transparent,
                       ],
                     )
@@ -1678,9 +1683,9 @@ class _IconModeButton extends StatelessWidget {
           width: double.infinity,
           height: 44,
           decoration: BoxDecoration(
-            color: const Color(0xFFEFF6FF),
+            color: const Color(0xFFE6F7F5),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFBFDBFE)),
+            border: Border.all(color: const Color(0xFFBDEBE7)),
           ),
           child: Icon(icon, color: _kPrimaryBlue, size: 20),
         ),
@@ -1754,7 +1759,7 @@ class _PageIndicator extends StatelessWidget {
       height: 6,
       decoration: BoxDecoration(
         gradient: isActive
-            ? LinearGradient(colors: [_kPrimaryBlue, const Color(0xFF1D4ED8)])
+            ? LinearGradient(colors: [_kPrimaryBlue, const Color(0xFF0B5D66)])
             : null,
         color: isActive ? null : const Color(0xFFCBD5E1),
         borderRadius: BorderRadius.circular(3),
@@ -1985,7 +1990,7 @@ class _StatsSummaryCard extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFF4F46E5), Color(0xFF7C3AED)],
+          colors: [Color(0xFF008090), Color(0xFF0F766E)],
         ),
         borderRadius: BorderRadius.circular(24),
         boxShadow: const [
