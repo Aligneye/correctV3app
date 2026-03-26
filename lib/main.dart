@@ -38,7 +38,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.light,
       theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
       home: isSupabaseConfigured
           ? const AuthGate()
           : const _SupabaseConfigMissingPage(),

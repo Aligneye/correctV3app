@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Singleton manager for maintaining Bluetooth connection across the app
 class BluetoothServiceManager {
@@ -20,17 +21,53 @@ class BluetoothServiceManager {
   static const int _reconnectJitterMs = 500;
   int _reconnectFailureCount = 0;
 
+  static const String _keyAutoReconnect = 'settings_auto_reconnect';
+
+  final autoReconnectEnabled = ValueNotifier<bool>(true);
+
   AlignEyeDeviceService get deviceService => _deviceService;
+
+  Future<void> setAutoReconnect(bool enabled) async {
+    autoReconnectEnabled.value = enabled;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_keyAutoReconnect, enabled);
+    } catch (e) {
+      debugPrint('Error saving auto-reconnect preference: $e');
+    }
+    if (!enabled) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectFailureCount = 0;
+      debugPrint('Auto-reconnect disabled — cancelled pending reconnects');
+    }
+  }
+
+  Future<void> _loadAutoReconnectPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      autoReconnectEnabled.value = prefs.getBool(_keyAutoReconnect) ?? true;
+    } catch (e) {
+      debugPrint('Error loading auto-reconnect preference: $e');
+    }
+  }
 
   /// Initialize and start maintaining the Bluetooth connection
   Future<void> initialize() async {
     debugPrint('=== BluetoothServiceManager: Initializing ===');
+    await _loadAutoReconnectPreference();
     _shouldMaintainConnection = true;
     _startConnectionMonitoring();
 
-    // Always try auto-connect when app opens (if not already connected)
-    // Use a small delay to ensure the app is fully initialized
+    // Only try auto-connect when app opens if the preference is enabled
     Future.delayed(const Duration(milliseconds: 300), () async {
+      if (!autoReconnectEnabled.value) {
+        debugPrint(
+          'BluetoothServiceManager: Auto-reconnect disabled in settings, skipping startup auto-connect',
+        );
+        return;
+      }
+
       final currentStatus = _deviceService.connectionStatus.value;
       debugPrint(
         'BluetoothServiceManager: Current connection status: $currentStatus',
@@ -120,6 +157,12 @@ class BluetoothServiceManager {
     if (!_shouldMaintainConnection) return;
 
     if (status == DeviceConnectionStatus.disconnected && !_isAutoReconnecting) {
+      if (!autoReconnectEnabled.value) {
+        debugPrint(
+          'Bluetooth disconnected, but auto-reconnect is disabled in settings — skipping',
+        );
+        return;
+      }
       debugPrint('Bluetooth disconnected, checking if should reconnect...');
       unawaited(_scheduleReconnectIfEligible());
     } else if (status == DeviceConnectionStatus.connected) {
@@ -169,6 +212,7 @@ class BluetoothServiceManager {
 
   void _scheduleReconnect() {
     if (!_shouldMaintainConnection) return;
+    if (!autoReconnectEnabled.value) return;
     if (_reconnectTimer != null) return;
 
     final baseDelayMs =

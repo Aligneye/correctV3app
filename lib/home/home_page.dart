@@ -2,10 +2,11 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:correctv1/bluetooth/bluetooth_service_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:correctv1/arogyam/arogyam_page.dart';
+import 'package:correctv1/home/modes_page.dart';
 import 'package:correctv1/discover/discover_page.dart';
 import 'package:correctv1/settings/settings_page.dart';
 import 'package:correctv1/components/nav_bar.dart';
@@ -17,9 +18,9 @@ const _kSectionSpacing = SizedBox(height: 24);
 const _kHeaderSpacing = SizedBox(height: 32);
 const _kInnerSpacing = SizedBox(height: 16);
 const _kPrimaryBlue = AppTheme.brandPrimary;
-const _kMutedText = Color(0xFF6B7C84);
-const _kPrimaryGreen = AppTheme.brandSecondary;
-const _kBadPostureRed = Color(0xFFEF4444);
+const _kMutedText = AppTheme.textSecondary;
+const _kPrimaryGreen = AppTheme.goodPostureEnd;
+const _kBadPostureRed = AppTheme.destructive;
 
 enum _ModeControlType { track, posture, therapy }
 
@@ -73,7 +74,7 @@ class _HomePageState extends State<HomePage> {
         onNavigateToPage: _onItemTapped,
         deviceService: _bluetoothManager.deviceService,
       ),
-      const ArogyamPage(),
+      const ModesPage(),
       const DiscoverPage(),
       const SettingsPage(),
     ];
@@ -143,25 +144,25 @@ class _HomeDashboardState extends State<HomeDashboard>
     _QuickMode(
       title: 'Tracking',
       icon: Icons.graphic_eq,
-      gradient: [Color(0xFF0EA5A4), Color(0xFF008090)],
+      gradient: [Color(0xFF60A5FA), Color(0xFF06B6D4)],
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Training',
       icon: Icons.flash_on,
-      gradient: [Color(0xFF14B8A6), Color(0xFF0F766E)],
+      gradient: [Color(0xFFC084FC), Color(0xFFEC4899)],
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Therapy',
       icon: Icons.favorite,
-      gradient: [Color(0xFF2DD4BF), Color(0xFF0E7490)],
+      gradient: [Color(0xFFFB7185), Color(0xFFEF4444)],
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Meditate',
       icon: Icons.self_improvement,
-      gradient: [Color(0xFF22D3EE), Color(0xFF0891B2)],
+      gradient: [Color(0xFF818CF8), Color(0xFF3B82F6)],
       targetIndex: 1,
     ),
   ];
@@ -441,8 +442,8 @@ class _HomeDashboardState extends State<HomeDashboard>
 
   Future<void> _showStartupConnectBottomSheet() {
     bool isConnecting = false;
-    const popupPrimary = Color(0xFF008090);
-    const popupSecondaryBg = Color(0xFFE6F4F3);
+    const popupPrimary = AppTheme.brandPrimary;
+    const popupSecondaryBg = AppTheme.connectedBg;
     return showModalBottomSheet<void>(
       context: context,
       isDismissible: true,
@@ -708,21 +709,6 @@ class _HomeDashboardState extends State<HomeDashboard>
                       ),
                     );
                   },
-                  onCalibratePressed: () async {
-                    final result = await Navigator.of(context).push<bool>(
-                      MaterialPageRoute<bool>(
-                        builder: (_) => CalibrationPage(
-                          deviceService: _deviceService,
-                          autoStart: true,
-                        ),
-                      ),
-                    );
-                    if (!mounted) return;
-                    if (result == true) {
-                      // Navigate to home page (index 0) after successful calibration
-                      widget.onNavigateToPage(0);
-                    }
-                  },
                   onPostureTimingSelected: (timing) {
                     setState(() => _selectedPostureTiming = timing);
                     unawaited(
@@ -764,11 +750,32 @@ class _HomeDashboardState extends State<HomeDashboard>
               _kSectionSpacing,
               _StaggeredFadeSlide(
                 controller: _controller,
-                delayMs: 400,
+                delayMs: 350,
                 child: _QuickModesSection(
                   modes: _quickModes,
                   onViewAll: () => widget.onNavigateToPage(1),
                   onModeTap: widget.onNavigateToPage,
+                ),
+              ),
+              _kSectionSpacing,
+              _StaggeredFadeSlide(
+                controller: _controller,
+                delayMs: 400,
+                child: _CalibrationCard(
+                  onCalibratePressed: () async {
+                    final result = await Navigator.of(context).push<bool>(
+                      MaterialPageRoute<bool>(
+                        builder: (_) => CalibrationPage(
+                          deviceService: _deviceService,
+                          autoStart: true,
+                        ),
+                      ),
+                    );
+                    if (!mounted) return;
+                    if (result == true) {
+                      widget.onNavigateToPage(0);
+                    }
+                  },
                 ),
               ),
               _kSectionSpacing,
@@ -835,16 +842,96 @@ class _DashboardHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final scheme = Theme.of(context).colorScheme;
+    final user = Supabase.instance.client.auth.currentUser;
+    final meta = user?.userMetadata;
+    final fullName =
+        meta?['full_name'] as String? ?? meta?['name'] as String? ?? '';
+    final firstName = fullName.split(' ').first;
+    final avatarUrl =
+        meta?['avatar_url'] as String? ?? meta?['picture'] as String?;
+    final initial = (firstName.isNotEmpty ? firstName : user?.email ?? 'U')
+        .substring(0, 1)
+        .toUpperCase();
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Image.asset('assets/logo HQ.png', height: 52, fit: BoxFit.contain),
-        const SizedBox(height: 8),
-        Text(
-          'Welcome back',
-          style: TextStyle(color: Colors.grey[500], fontSize: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                firstName.isNotEmpty
+                    ? 'Welcome Back, $firstName'
+                    : 'Welcome Back',
+                style: TextStyle(
+                  color: _kMutedText,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Image.asset(
+                'assets/appIcon.png',
+                height: 40,
+                fit: BoxFit.contain,
+              ),
+            ],
+          ),
+        ),
+        GestureDetector(
+          onTap: () {},
+          child: Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: avatarUrl == null ? AppTheme.brandGradient : null,
+              color: avatarUrl != null ? scheme.surface : null,
+              boxShadow: [
+                BoxShadow(
+                  color: scheme.primary.withValues(alpha: 0.25),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: avatarUrl != null
+                ? Image.network(
+                    avatarUrl,
+                    width: 46,
+                    height: 46,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) =>
+                        _InitialAvatar(initial: initial, scheme: scheme),
+                  )
+                : _InitialAvatar(initial: initial, scheme: scheme),
+          ),
         ),
       ],
+    );
+  }
+}
+
+class _InitialAvatar extends StatelessWidget {
+  final String initial;
+  final ColorScheme scheme;
+
+  const _InitialAvatar({required this.initial, required this.scheme});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Text(
+        initial,
+        style: TextStyle(
+          color: scheme.onPrimary,
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
     );
   }
 }
@@ -904,7 +991,7 @@ class _DeviceStatusCard extends StatelessWidget {
                       width: 40,
                       height: 40,
                       decoration: BoxDecoration(
-                        color: const Color(0xFFDDF3F1),
+                        color: AppTheme.connectedBg,
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: Icon(Icons.bluetooth, color: iconColor, size: 20),
@@ -995,7 +1082,7 @@ Color _batteryTierColor(int level) {
   if (level < 60) {
     return const Color(0xFFFEF3C7);
   }
-  return const Color(0xFFEAFBF1);
+  return AppTheme.successBg;
 }
 
 Color _batteryTierTextColor(int level) {
@@ -1005,7 +1092,7 @@ Color _batteryTierTextColor(int level) {
   if (level < 60) {
     return const Color(0xFFF59E0B);
   }
-  return _kPrimaryGreen;
+  return AppTheme.successText;
 }
 
 class _PostureGaugeCard extends StatelessWidget {
@@ -1033,7 +1120,7 @@ class _PostureGaugeCard extends StatelessWidget {
         children: [
           Text(
             'Real-time Posture',
-            style: TextStyle(color: Colors.grey[500], fontSize: 14),
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
@@ -1113,7 +1200,7 @@ class _RecentValuesCard extends StatelessWidget {
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,
-              color: Color(0xFF1F2937),
+              color: AppTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 8),
@@ -1139,13 +1226,19 @@ class _SurfaceCard extends StatelessWidget {
       width: double.infinity,
       padding: padding,
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(22),
+        color: Colors.white.withValues(alpha: 0.60),
+        borderRadius: BorderRadius.circular(AppTheme.radiusLg),
+        border: Border.all(color: AppTheme.glassBorder),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x1A000000),
-            blurRadius: 20,
-            offset: Offset(0, 10),
+            color: Color(0x0D000000),
+            blurRadius: 24,
+            offset: Offset(0, 8),
+          ),
+          BoxShadow(
+            color: Color(0x05000000),
+            blurRadius: 12,
+            offset: Offset(0, 2),
           ),
         ],
       ),
@@ -1164,7 +1257,6 @@ class _ModeControlCard extends StatelessWidget {
   final String currentTherapyPattern;
   final String nextTherapyPattern;
   final ValueChanged<_ModeControlType> onModeSelected;
-  final VoidCallback onCalibratePressed;
   final ValueChanged<_PostureTimingType> onPostureTimingSelected;
   final ValueChanged<int> onDifficultySelected;
   final ValueChanged<int> onTherapyDurationSelected;
@@ -1179,7 +1271,6 @@ class _ModeControlCard extends StatelessWidget {
     required this.currentTherapyPattern,
     required this.nextTherapyPattern,
     required this.onModeSelected,
-    required this.onCalibratePressed,
     required this.onPostureTimingSelected,
     required this.onDifficultySelected,
     required this.onTherapyDurationSelected,
@@ -1197,7 +1288,7 @@ class _ModeControlCard extends StatelessWidget {
             style: TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w600,
-              color: Color(0xFF1F2937),
+              color: AppTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 14),
@@ -1228,18 +1319,6 @@ class _ModeControlCard extends StatelessWidget {
               ),
             ],
           ),
-          if (selectedMode == _ModeControlType.track) ...[
-            const SizedBox(height: 16),
-            _LabeledControl(
-              label: 'Calibrate',
-              icon: Icons.tune_rounded,
-              child: _IconModeButton(
-                icon: Icons.tune_rounded,
-                onTap: onCalibratePressed,
-                tooltip: 'Calibrate',
-              ),
-            ),
-          ],
           if (selectedMode == _ModeControlType.posture) ...[
             const SizedBox(height: 16),
             const Row(
@@ -1253,7 +1332,7 @@ class _ModeControlCard extends StatelessWidget {
                 Text(
                   'Posture settings',
                   style: TextStyle(
-                    color: Color(0xFF334155),
+                    color: AppTheme.textPrimary,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1417,7 +1496,10 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
       decoration: BoxDecoration(
         gradient: isActive
             ? LinearGradient(
-                colors: [const Color(0xFFE6F7F5), const Color(0xFFEAF7F8)],
+                colors: [
+                  AppTheme.brandPrimary.withValues(alpha: 0.06),
+                  AppTheme.purple600.withValues(alpha: 0.04),
+                ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               )
@@ -1426,8 +1508,8 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: isActive
-              ? _kPrimaryBlue.withValues(alpha: 0.3)
-              : const Color(0xFFE2E8F0),
+              ? AppTheme.brandPrimary.withValues(alpha: 0.3)
+              : AppTheme.border,
           width: isActive ? 1.5 : 1,
         ),
         boxShadow: isActive
@@ -1450,8 +1532,8 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
               gradient: isActive
                   ? LinearGradient(
                       colors: [
-                        _kPrimaryBlue.withValues(alpha: 0.15),
-                        _kPrimaryBlue.withValues(alpha: 0.08),
+                        AppTheme.brandPrimary.withValues(alpha: 0.15),
+                        AppTheme.brandPrimary.withValues(alpha: 0.08),
                       ],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
@@ -1473,14 +1555,14 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
                       padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
                         color: isActive
-                            ? _kPrimaryBlue.withValues(alpha: 0.2)
-                            : const Color(0xFFE2E8F0),
+                            ? AppTheme.brandPrimary.withValues(alpha: 0.2)
+                            : AppTheme.border,
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Icon(
                         Icons.timer_outlined,
                         size: 12,
-                        color: isActive ? _kPrimaryBlue : _kMutedText,
+                        color: isActive ? AppTheme.brandPrimary : _kMutedText,
                       ),
                     ),
                     const SizedBox(width: 6),
@@ -1489,7 +1571,7 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w600,
-                        color: isActive ? _kPrimaryBlue : _kMutedText,
+                        color: isActive ? AppTheme.brandPrimary : _kMutedText,
                         letterSpacing: 0.5,
                       ),
                     ),
@@ -1503,7 +1585,9 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
-                    color: isActive ? _kPrimaryBlue : const Color(0xFF64748B),
+                    color: isActive
+                        ? AppTheme.brandPrimary
+                        : AppTheme.textSecondary,
                     fontFeatures: const [FontFeature.tabularFigures()],
                     letterSpacing: 0.5,
                   ),
@@ -1523,12 +1607,12 @@ class _TherapyStatusRowState extends State<_TherapyStatusRow> {
                       end: Alignment.bottomCenter,
                       colors: [
                         Colors.transparent,
-                        const Color(0xFFBDEBE7),
+                        AppTheme.brandPrimary.withValues(alpha: 0.2),
                         Colors.transparent,
                       ],
                     )
                   : null,
-              color: isActive ? null : const Color(0xFFE2E8F0),
+              color: isActive ? null : AppTheme.border,
             ),
           ),
           // Swipeable pattern section
@@ -1613,7 +1697,7 @@ class _ModeButton extends StatelessWidget {
             label,
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: selected ? Colors.white : const Color(0xFF334155),
+              color: selected ? Colors.white : AppTheme.textPrimary,
               fontWeight: FontWeight.w600,
               fontSize: 13,
             ),
@@ -1661,33 +1745,151 @@ class _LabeledControl extends StatelessWidget {
   }
 }
 
-class _IconModeButton extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback onTap;
-  final String tooltip;
+class _CalibrationCard extends StatelessWidget {
+  final VoidCallback onCalibratePressed;
 
-  const _IconModeButton({
-    required this.icon,
+  const _CalibrationCard({required this.onCalibratePressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return _SurfaceCard(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  gradient: AppTheme.goodPostureGradient,
+                  borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+                ),
+                child: const Icon(
+                  Icons.wifi_tethering_rounded,
+                  color: Colors.white,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Alignment Calibration',
+                      style: TextStyle(
+                        color: AppTheme.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Reset posture baseline',
+                      style: TextStyle(
+                        color: _kMutedText,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          _kInnerSpacing,
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.connectedBg.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+              border: Border.all(
+                color: AppTheme.brandPrimary.withValues(alpha: 0.15),
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.info_outline_rounded,
+                  color: _kPrimaryBlue,
+                  size: 18,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Sit in your ideal posture position before calibrating. '
+                    'This will set your baseline reference angle.',
+                    style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _kInnerSpacing,
+          _GradientActionButton(
+            label: 'Start Calibration',
+            gradient: AppTheme.trainingGradient,
+            onTap: onCalibratePressed,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GradientActionButton extends StatelessWidget {
+  final String label;
+  final LinearGradient gradient;
+  final VoidCallback onTap;
+
+  const _GradientActionButton({
+    required this.label,
+    required this.gradient,
     required this.onTap,
-    required this.tooltip,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(AppTheme.radiusSm),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: double.infinity,
-          height: 44,
+        borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+        child: Ink(
           decoration: BoxDecoration(
-            color: const Color(0xFFE6F7F5),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFBDEBE7)),
+            gradient: gradient,
+            borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+            boxShadow: [
+              BoxShadow(
+                color: gradient.colors.first.withValues(alpha: 0.3),
+                blurRadius: 12,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
-          child: Icon(icon, color: _kPrimaryBlue, size: 20),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -1722,7 +1924,7 @@ class _TherapyPatternCard extends StatelessWidget {
             style: TextStyle(
               fontSize: 9,
               fontWeight: FontWeight.w700,
-              color: isHighlighted ? _kPrimaryBlue : _kMutedText,
+              color: isHighlighted ? AppTheme.brandPrimary : _kMutedText,
               letterSpacing: 1.2,
             ),
           ),
@@ -1734,7 +1936,9 @@ class _TherapyPatternCard extends StatelessWidget {
             style: TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w700,
-              color: isHighlighted ? _kPrimaryBlue : const Color(0xFF1F2937),
+              color: isHighlighted
+                  ? AppTheme.brandPrimary
+                  : AppTheme.textPrimary,
               letterSpacing: 0.3,
               height: 1.2,
             ),
@@ -1759,14 +1963,16 @@ class _PageIndicator extends StatelessWidget {
       height: 6,
       decoration: BoxDecoration(
         gradient: isActive
-            ? LinearGradient(colors: [_kPrimaryBlue, const Color(0xFF0B5D66)])
+            ? LinearGradient(
+                colors: [AppTheme.brandPrimary, AppTheme.purple600],
+              )
             : null,
         color: isActive ? null : const Color(0xFFCBD5E1),
         borderRadius: BorderRadius.circular(3),
         boxShadow: isActive
             ? [
                 BoxShadow(
-                  color: _kPrimaryBlue.withValues(alpha: 0.4),
+                  color: AppTheme.brandPrimary.withValues(alpha: 0.4),
                   blurRadius: 4,
                   offset: const Offset(0, 2),
                 ),
@@ -1797,7 +2003,7 @@ class _DropdownModeButton<T> extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: AppTheme.border),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<T>(
@@ -1808,7 +2014,7 @@ class _DropdownModeButton<T> extends StatelessWidget {
           style: const TextStyle(
             fontSize: 12,
             fontWeight: FontWeight.w600,
-            color: Color(0xFF334155),
+            color: AppTheme.textPrimary,
             overflow: TextOverflow.ellipsis,
           ),
           selectedItemBuilder: selectedLabelBuilder == null
@@ -1824,7 +2030,7 @@ class _DropdownModeButton<T> extends StatelessWidget {
                           style: const TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
-                            color: Color(0xFF334155),
+                            color: AppTheme.textPrimary,
                           ),
                         ),
                       ),
@@ -1883,7 +2089,7 @@ class _QuickModesSection extends StatelessWidget {
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w600,
-                color: Color(0xFF1F2937),
+                color: AppTheme.textPrimary,
               ),
             ),
             TextButton(
@@ -1968,7 +2174,7 @@ class _QuickModeCard extends StatelessWidget {
                 style: const TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
-                  color: Color(0xFF1F2937),
+                  color: AppTheme.textPrimary,
                 ),
               ),
             ],
@@ -1989,15 +2195,13 @@ class _StatsSummaryCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF008090), Color(0xFF0F766E)],
-        ),
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: const [
+        gradient: AppTheme.brandGradient,
+        borderRadius: BorderRadius.circular(AppTheme.radiusXl),
+        boxShadow: [
           BoxShadow(
-            color: Colors.black26,
-            blurRadius: 15,
-            offset: Offset(0, 8),
+            color: AppTheme.blue600.withValues(alpha: 0.35),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
           ),
         ],
       ),
@@ -2053,7 +2257,10 @@ class _StatItem extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             item.label,
-            style: const TextStyle(fontSize: 12, color: Color(0xFFDBEAFE)),
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.white.withValues(alpha: 0.75),
+            ),
           ),
         ],
       ),

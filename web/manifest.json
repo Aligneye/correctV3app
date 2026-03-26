@@ -1,6 +1,6 @@
 {
-    "name": "correctv1",
-    "short_name": "correctv1",
+    "name": "AlignEye",
+    "short_name": "AlignEye",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
