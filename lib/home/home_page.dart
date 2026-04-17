@@ -862,9 +862,7 @@ class _DashboardHeader extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                firstName.isNotEmpty
-                    ? 'Welcome Back, $firstName'
-                    : 'Welcome Back',
+                firstName.isNotEmpty ? 'Welcome Back' : 'Welcome Back',
                 style: TextStyle(
                   color: _kMutedText,
                   fontSize: 16,
@@ -873,7 +871,7 @@ class _DashboardHeader extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Image.asset(
-                'assets/appIcon.png',
+                'assets/logo HQ.png',
                 height: 40,
                 fit: BoxFit.contain,
               ),
