@@ -7,10 +7,11 @@ import 'package:correctv1/bluetooth/bluetooth_service_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:correctv1/home/modes_page.dart';
-import 'package:correctv1/discover/discover_page.dart';
+import 'package:correctv1/analytics/analytics_screen.dart';
 import 'package:correctv1/settings/settings_page.dart';
 import 'package:correctv1/components/nav_bar.dart';
 import 'package:correctv1/calibration/calibration_page.dart';
+import 'package:correctv1/services/device_manager.dart';
 import 'package:correctv1/theme/app_theme.dart';
 
 const _kPagePadding = EdgeInsets.fromLTRB(24, 24, 24, 100);
@@ -46,6 +47,9 @@ class _HomePageState extends State<HomePage> {
     _pageController = PageController();
     // Initialize Bluetooth connection when HomePage is created
     _bluetoothManager.initialize();
+    // Hook up the BLE -> Supabase sync coordinator. Idempotent so it's safe
+    // to call on every HomePage rebuild.
+    DeviceManager().init();
   }
 
   @override
@@ -75,7 +79,7 @@ class _HomePageState extends State<HomePage> {
         deviceService: _bluetoothManager.deviceService,
       ),
       const ModesPage(),
-      const DiscoverPage(),
+      const AnalyticsScreen(),
       const SettingsPage(),
     ];
 

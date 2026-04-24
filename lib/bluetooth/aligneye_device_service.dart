@@ -168,6 +168,7 @@ class AlignEyeDeviceService {
   final currentReading = ValueNotifier<PostureReading?>(null);
 
   BluetoothDevice? _device;
+  BluetoothDevice? get device => _device;
   BluetoothCharacteristic? _notifyCharacteristic;
   StreamSubscription<List<int>>? _notifySubscription;
   StreamSubscription<List<ScanResult>>? _scanSubscription;
@@ -267,6 +268,18 @@ class AlignEyeDeviceService {
     } catch (e) {
       debugPrint('Failed to send mode control: $e');
     }
+  }
+
+  /// Sends the current phone date/time and timezone to the device.
+  /// Firmware prints the received time as local date/time in the Serial monitor.
+  Future<bool> sendDateTime() async {
+    if (connectionStatus.value != DeviceConnectionStatus.connected) {
+      return false;
+    }
+    final now = DateTime.now();
+    final epochSeconds = now.millisecondsSinceEpoch ~/ 1000;
+    final tzOffsetSeconds = now.timeZoneOffset.inSeconds;
+    return _writeTextCommand('TIME=$epochSeconds;TZ=$tzOffsetSeconds');
   }
 
   Future<bool> sendCalibrationStart() async {
@@ -618,6 +631,11 @@ class AlignEyeDeviceService {
       _isConnecting = false;
       connectionStatus.value = DeviceConnectionStatus.connected;
       _connectionRetryCount = 0; // Reset retry count on success
+
+      // Sync phone time to device immediately after every successful connection.
+      sendDateTime().then((sent) {
+        debugPrint(sent ? 'DateTime synced to device' : 'DateTime sync failed');
+      });
 
       // Save connection state: user has connected and not manually disconnected
       if (!isAutoConnect) {
