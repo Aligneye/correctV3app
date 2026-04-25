@@ -39,6 +39,13 @@ class MyApp extends StatelessWidget {
       themeMode: ThemeMode.light,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
+      builder: (context, child) {
+        final mediaQuery = MediaQuery.of(context);
+        return MediaQuery(
+          data: mediaQuery.copyWith(textScaler: TextScaler.noScaling),
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
       home: isSupabaseConfigured
           ? const AuthGate()
           : const _SupabaseConfigMissingPage(),

@@ -10,7 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const _kServiceUuid = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 const _kCharacteristicUuid = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
-const _kDefaultDeviceNamePrefix = 'correct v1';
+const _kDefaultDeviceNamePrefix = 'aligneye pod';
 
 enum DeviceConnectionStatus { disconnected, connecting, connected }
 
@@ -52,6 +52,10 @@ class PostureReading {
   final String therapyNextPattern;
   final int therapyElapsedSeconds;
   final int therapyRemainingSeconds;
+  final int liveSessionId;
+  final int liveSessionElapsedSeconds;
+  final int liveSessionStartEpoch;
+  final int liveSessionBadCount;
   final DateTime timestamp;
 
   const PostureReading({
@@ -80,6 +84,10 @@ class PostureReading {
     required this.therapyNextPattern,
     required this.therapyElapsedSeconds,
     required this.therapyRemainingSeconds,
+    required this.liveSessionId,
+    required this.liveSessionElapsedSeconds,
+    required this.liveSessionStartEpoch,
+    required this.liveSessionBadCount,
     required this.timestamp,
   });
 
@@ -135,6 +143,14 @@ class PostureReading {
       therapyRemainingSeconds: toInt(
         json['t_rem'] ?? json['therapy_remaining_sec'],
       ),
+      liveSessionId: toInt(json['s_id'] ?? json['session_id']),
+      liveSessionElapsedSeconds: toInt(
+        json['s_elap'] ?? json['session_elapsed_sec'],
+      ),
+      liveSessionStartEpoch: toInt(
+        json['s_start'] ?? json['session_start_epoch'],
+      ),
+      liveSessionBadCount: toInt(json['s_bad'] ?? json['session_bad_count']),
       timestamp: DateTime.now(),
     );
   }
@@ -151,7 +167,8 @@ class PostureReading {
         'difficulty=$difficultyDeg, therapyNow=$therapyPattern, '
         'therapyNext=$therapyNextPattern, '
         'therapyElapsed=$therapyElapsedSeconds, '
-        'therapyRemaining=$therapyRemainingSeconds';
+        'therapyRemaining=$therapyRemainingSeconds, '
+        'sessionId=$liveSessionId, sessionElapsed=$liveSessionElapsedSeconds';
   }
 }
 
@@ -231,6 +248,8 @@ class AlignEyeDeviceService {
       currentReading.value?.therapyElapsedSeconds ?? 0;
   int get currentTherapyRemainingSeconds =>
       currentReading.value?.therapyRemainingSeconds ?? 0;
+  int get currentLiveSessionElapsedSeconds =>
+      currentReading.value?.liveSessionElapsedSeconds ?? 0;
 
   Future<void> sendModeControl({
     required String mode,
@@ -442,7 +461,7 @@ class AlignEyeDeviceService {
         }
 
         throw Exception(
-          'Device "correct v1" not found. Please ensure the device is powered on and within range.',
+          'Device "aligneye pod" not found. Please ensure the device is powered on and within range.',
         );
       }
 

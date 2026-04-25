@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze *)",
+      "WebFetch(domain:kind-device-61115520.figma.site)"
+    ]
+  }
+}

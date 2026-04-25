@@ -3,42 +3,51 @@ import 'package:flutter/services.dart';
 import 'package:correctv1/theme/app_theme.dart';
 
 class ModesPage extends StatelessWidget {
-  const ModesPage({super.key});
+  final VoidCallback? onOpenTherapy;
+  final VoidCallback? onOpenTraining;
+  final VoidCallback? onOpenMeditation;
+
+  const ModesPage({
+    super.key,
+    this.onOpenTherapy,
+    this.onOpenTraining,
+    this.onOpenMeditation,
+  });
 
   static const _modes = <_ModeData>[
     _ModeData(
-      title: 'Tracking Mode',
+      title: 'Tracking mode',
       subtitle: 'Monitor your posture in real-time',
       icon: Icons.monitor_heart_outlined,
       gradient: AppTheme.trackingGradient,
     ),
     _ModeData(
-      title: 'Training Mode',
+      title: 'Posture training mode',
       subtitle: 'Basic, Intermediate & Advanced levels',
-      icon: Icons.bolt,
+      icon: Icons.accessibility_new_rounded,
       gradient: AppTheme.trainingGradient,
     ),
     _ModeData(
-      title: 'Therapy Mode',
+      title: 'Vibration therapy mode',
       subtitle: 'Acupressure vibration therapy',
       icon: Icons.favorite,
       gradient: AppTheme.therapyGradient,
     ),
     _ModeData(
-      title: 'Meditation Mode',
+      title: 'Meditation mode',
       subtitle: 'Rhythmic breathing guidance',
       icon: Icons.self_improvement,
       gradient: AppTheme.meditationGradient,
     ),
     _ModeData(
-      title: 'AlignWalk Mode',
+      title: 'Walking mode',
       subtitle: 'Walking posture trainer',
       icon: Icons.directions_walk,
       gradient: AppTheme.alignWalkGradient,
     ),
     _ModeData(
-      title: 'Riding Mode',
-      subtitle: 'Bike & car posture monitoring',
+      title: 'Analytics',
+      subtitle: 'Track you posture progress',
       icon: Icons.directions_car,
       gradient: AppTheme.ridingGradient,
     ),
@@ -117,6 +126,17 @@ class ModesPage extends StatelessWidget {
 
   void _onModeTapped(BuildContext context, _ModeData mode) {
     HapticFeedback.lightImpact();
+    if (mode.title == 'Training Mode') {
+      onOpenTraining?.call();
+      return;
+    }
+    if (mode.title == 'Therapy Mode') {
+      onOpenTherapy?.call();
+      return;
+    }
+    if (mode.title == 'Meditation Mode') {
+      onOpenMeditation?.call();
+    }
   }
 }
 

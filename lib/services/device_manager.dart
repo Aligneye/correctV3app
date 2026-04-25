@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
 import 'package:correctv1/bluetooth/bluetooth_service_manager.dart';
 import 'package:correctv1/services/ble_session_sync.dart';
+import 'package:correctv1/services/live_session_recorder.dart';
 
 /// App-wide glue between the Bluetooth layer and the session-sync layer.
 ///
@@ -33,8 +34,10 @@ class DeviceManager {
   /// Bumps on every sync completion; pages can watch this to trigger a
   /// reload of the session list without holding onto a subscription.
   final ValueNotifier<int> syncCompletedTick = ValueNotifier<int>(0);
+  final ValueNotifier<String?> activeSessionId = ValueNotifier<String?>(null);
 
   BleSessionSync? _activeSync;
+  LiveSessionRecorder? _liveSessionRecorder;
   StreamSubscription<SyncProgress>? _progressSub;
   bool _wired = false;
 
@@ -43,13 +46,20 @@ class DeviceManager {
     if (_wired) return;
     _wired = true;
     _btManager.deviceService.connectionStatus.addListener(_onStatusChanged);
+    _liveSessionRecorder = LiveSessionRecorder(
+      deviceService: _btManager.deviceService,
+      activeSessionId: activeSessionId,
+      onSessionChanged: () => syncCompletedTick.value++,
+    )..start();
   }
 
   void _onStatusChanged() {
     final status = _btManager.deviceService.connectionStatus.value;
     if (status == DeviceConnectionStatus.connected) {
+      _liveSessionRecorder?.setEnabled(false);
       unawaited(_startSync());
     } else if (status == DeviceConnectionStatus.disconnected) {
+      _liveSessionRecorder?.setEnabled(false);
       _teardownSync();
     }
   }
@@ -81,11 +91,13 @@ class DeviceManager {
         if (p.complete) {
           isSyncing.value = false;
           syncCompletedTick.value++;
+          _liveSessionRecorder?.setEnabled(true);
         }
       },
       onError: (Object e) {
         debugPrint('DeviceManager: sync stream error: $e');
         isSyncing.value = false;
+        _liveSessionRecorder?.setEnabled(true);
       },
       onDone: () {
         isSyncing.value = false;
@@ -97,6 +109,7 @@ class DeviceManager {
     } catch (e) {
       debugPrint('DeviceManager: startSync threw: $e');
       isSyncing.value = false;
+      _liveSessionRecorder?.setEnabled(true);
     }
   }
 
@@ -121,5 +134,7 @@ class DeviceManager {
       _wired = false;
     }
     await _teardownSync();
+    await _liveSessionRecorder?.dispose();
+    _liveSessionRecorder = null;
   }
 }

@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 /// Must match `src/bluetooth_manager.cpp` exactly.
 const String _kSessionDataUuid = '0000aa01-0000-1000-8000-00805f9b34fb';
 const String _kSessionAckUuid = '0000aa02-0000-1000-8000-00805f9b34fb';
+const int _kSessionSyncStart = 0xFF;
 
 /// Progress snapshot emitted by [BleSessionSync.progress] for UI feedback.
 class SyncProgress {
@@ -106,8 +107,14 @@ class BleSessionSync {
       );
 
       // Firmware sends the first packet on its own right after the app
-      // subscribes, so we just wait. If nothing arrives within
-      // `_idleTimeout` we assume the device had no unsent sessions.
+      // subscribes only after Flutter writes this start byte. If nothing
+      // arrives within `_idleTimeout` we assume the device had no unsent
+      // sessions.
+      await _ackChar!.write([
+        _kSessionSyncStart,
+      ], withoutResponse: _ackChar!.properties.writeWithoutResponse);
+      debugPrint('[SESSION] Sync start requested over BLE');
+
       _armIdleTimer();
       _emitProgress();
     } catch (e) {

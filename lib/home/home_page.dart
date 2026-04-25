@@ -2,21 +2,24 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:correctv1/bluetooth/bluetooth_service_manager.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:correctv1/home/modes_page.dart';
+import 'package:correctv1/home/meditation_page.dart';
+import 'package:correctv1/discover/discover_page.dart';
+import 'package:correctv1/home/therapy_page.dart';
+import 'package:correctv1/home/training_page.dart';
 import 'package:correctv1/analytics/analytics_screen.dart';
 import 'package:correctv1/settings/settings_page.dart';
 import 'package:correctv1/components/nav_bar.dart';
 import 'package:correctv1/calibration/calibration_page.dart';
 import 'package:correctv1/services/device_manager.dart';
+import 'package:correctv1/services/session_repository.dart';
 import 'package:correctv1/theme/app_theme.dart';
 
 const _kPagePadding = EdgeInsets.fromLTRB(24, 24, 24, 100);
 const _kSectionSpacing = SizedBox(height: 24);
-const _kHeaderSpacing = SizedBox(height: 32);
 const _kInnerSpacing = SizedBox(height: 16);
 const _kPrimaryBlue = AppTheme.brandPrimary;
 const _kMutedText = AppTheme.textSecondary;
@@ -71,14 +74,89 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Future<void> _openTherapyPage() async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        pageBuilder: (_, animation, __) =>
+            FadeTransition(opacity: animation, child: const TherapyPage()),
+        transitionsBuilder: (_, animation, __, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0.06, 0),
+              end: Offset.zero,
+            ).animate(curved),
+            child: FadeTransition(opacity: curved, child: child),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _openTrainingPage() async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        pageBuilder: (_, animation, __) =>
+            FadeTransition(opacity: animation, child: const TrainingPage()),
+        transitionsBuilder: (_, animation, __, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0.06, 0),
+              end: Offset.zero,
+            ).animate(curved),
+            child: FadeTransition(opacity: curved, child: child),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _openMeditationPage() async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        pageBuilder: (_, animation, __) =>
+            FadeTransition(opacity: animation, child: const MeditationPage()),
+        transitionsBuilder: (_, animation, __, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0.06, 0),
+              end: Offset.zero,
+            ).animate(curved),
+            child: FadeTransition(opacity: curved, child: child),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = [
       HomeDashboard(
         onNavigateToPage: _onItemTapped,
+        onOpenTherapy: _openTherapyPage,
+        onOpenTraining: _openTrainingPage,
+        onOpenMeditation: _openMeditationPage,
         deviceService: _bluetoothManager.deviceService,
       ),
-      const ModesPage(),
+      const DiscoverPage(),
       const AnalyticsScreen(),
       const SettingsPage(),
     ];
@@ -110,11 +188,17 @@ class _HomePageState extends State<HomePage> {
 
 class HomeDashboard extends StatefulWidget {
   final ValueChanged<int> onNavigateToPage;
+  final VoidCallback onOpenTherapy;
+  final VoidCallback onOpenTraining;
+  final VoidCallback onOpenMeditation;
   final AlignEyeDeviceService deviceService;
 
   const HomeDashboard({
     super.key,
     required this.onNavigateToPage,
+    required this.onOpenTherapy,
+    required this.onOpenTraining,
+    required this.onOpenMeditation,
     required this.deviceService,
   });
 
@@ -126,6 +210,8 @@ class _HomeDashboardState extends State<HomeDashboard>
     with SingleTickerProviderStateMixin {
   late final AlignEyeDeviceService _deviceService;
   final BluetoothServiceManager _bluetoothManager = BluetoothServiceManager();
+  final DeviceManager _deviceManager = DeviceManager();
+  final SessionRepository _sessionRepository = SessionRepository();
   StreamSubscription<PostureReading>? _readingSubscription;
 
   double _postureAngle = 0;
@@ -143,28 +229,31 @@ class _HomeDashboardState extends State<HomeDashboard>
   String _nextTherapyPattern = 'Waiting for therapy';
   bool _hasShownStartupConnectSheet = false;
   bool _isFindingDevice = false;
+  bool _isLoadingOfflineSessions = true;
+  int _lastSyncTick = 0;
+  List<SessionData> _offlineSessions = const <SessionData>[];
 
   static const List<_QuickMode> _quickModes = [
     _QuickMode(
-      title: 'Tracking',
+      title: 'Therapy',
       icon: Icons.graphic_eq,
       gradient: [Color(0xFF60A5FA), Color(0xFF06B6D4)],
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Training',
-      icon: Icons.flash_on,
+      icon: Icons.accessibility_new_rounded,
       gradient: [Color(0xFFC084FC), Color(0xFFEC4899)],
       targetIndex: 1,
     ),
     _QuickMode(
-      title: 'Therapy',
-      icon: Icons.favorite,
+      title: 'Walking',
+      icon: Icons.directions_walk_rounded,
       gradient: [Color(0xFFFB7185), Color(0xFFEF4444)],
       targetIndex: 1,
     ),
     _QuickMode(
-      title: 'Meditate',
+      title: 'Breathe',
       icon: Icons.self_improvement,
       gradient: [Color(0xFF818CF8), Color(0xFF3B82F6)],
       targetIndex: 1,
@@ -220,16 +309,58 @@ class _HomeDashboardState extends State<HomeDashboard>
     });
 
     unawaited(_handleStartupDevicePrompt());
+    _lastSyncTick = _deviceManager.syncCompletedTick.value;
+    _deviceManager.syncCompletedTick.addListener(_handleSessionSyncFinished);
+    _deviceManager.isSyncing.addListener(_handleSyncingChanged);
+    _deviceManager.activeSessionId.addListener(_handleSessionSyncFinished);
+    unawaited(_loadOfflineSessions());
   }
 
   @override
   void dispose() {
     _readingSubscription?.cancel();
+    _deviceManager.syncCompletedTick.removeListener(_handleSessionSyncFinished);
+    _deviceManager.isSyncing.removeListener(_handleSyncingChanged);
+    _deviceManager.activeSessionId.removeListener(_handleSessionSyncFinished);
     _therapyCountdownTimer?.cancel();
     // Don't dispose the device service here - it's managed by BluetoothServiceManager
     // unawaited(_deviceService.dispose());
     _controller.dispose();
     super.dispose();
+  }
+
+  void _handleSyncingChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _handleSessionSyncFinished() {
+    final tick = _deviceManager.syncCompletedTick.value;
+    if (tick == _lastSyncTick) return;
+    _lastSyncTick = tick;
+    unawaited(_loadOfflineSessions());
+  }
+
+  Future<void> _loadOfflineSessions() async {
+    if (!mounted) return;
+    setState(() => _isLoadingOfflineSessions = true);
+    try {
+      final sessions = await _sessionRepository.fetchByPeriod(
+        'all',
+        liveSessionId: _deviceManager.activeSessionId.value,
+      );
+      if (!mounted) return;
+      setState(() {
+        _offlineSessions = sessions.take(3).toList(growable: false);
+        _isLoadingOfflineSessions = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _offlineSessions = const <SessionData>[];
+        _isLoadingOfflineSessions = false;
+      });
+    }
   }
 
   bool get _isTherapyCountdownRunning =>
@@ -309,7 +440,7 @@ class _HomeDashboardState extends State<HomeDashboard>
             '4. Return to the app and try again';
       } else if (errorMessage.contains('not found')) {
         dialogContent =
-            'Device "correct v1" not found.\n\n'
+            'Device "aligneye pod" not found.\n\n'
             'Please ensure:\n\n'
             '1. Device is powered on\n'
             '2. Device is within range\n'
@@ -359,7 +490,7 @@ class _HomeDashboardState extends State<HomeDashboard>
             title: const Text('Connection Failed'),
             content: const Text(
               'Could not connect to device. Please ensure:\n\n'
-              '1. Device "correct v1" is powered on\n'
+              '1. Device "aligneye pod" is powered on\n'
               '2. Device is within range\n'
               '3. Device is not connected to another device\n\n'
               'If you can see the device in Bluetooth settings, try pairing it manually first.',
@@ -471,7 +602,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                     children: [
                       const Center(
                         child: Text(
-                          'Align Correct V1',
+                          'Aligneye Pod',
                           style: TextStyle(
                             fontSize: 22,
                             fontWeight: FontWeight.w700,
@@ -632,6 +763,171 @@ class _HomeDashboardState extends State<HomeDashboard>
     return _therapyDurationMinutes;
   }
 
+  void _showAllModesSheet(BuildContext context) {
+    HapticFeedback.lightImpact();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) {
+        final scheme = Theme.of(sheetCtx).colorScheme;
+        return DraggableScrollableSheet(
+          initialChildSize: 0.7,
+          minChildSize: 0.4,
+          maxChildSize: 0.9,
+          builder: (_, scrollController) {
+            return Container(
+              decoration: BoxDecoration(
+                color: scheme.surface,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(24),
+                ),
+              ),
+              child: Column(
+                children: [
+                  const SizedBox(height: 12),
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: scheme.onSurfaceVariant.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      children: [
+                        ShaderMask(
+                          shaderCallback: (bounds) =>
+                              AppTheme.brandGradient.createShader(bounds),
+                          blendMode: BlendMode.srcIn,
+                          child: const Text(
+                            'All Modes',
+                            style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              height: 1.2,
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: () => Navigator.pop(sheetCtx),
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: scheme.onSurfaceVariant.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.close_rounded,
+                              size: 20,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Choose your training mode',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: ListView(
+                      controller: scrollController,
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+                      children: [
+                        _AllModesSheetItem(
+                          title: 'Tracking mode',
+                          subtitle: 'Monitor your posture in real-time',
+                          icon: Icons.monitor_heart_outlined,
+                          gradient: AppTheme.trackingGradient,
+                          onTap: () {
+                            Navigator.pop(sheetCtx);
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        _AllModesSheetItem(
+                          title: 'Posture training mode',
+                          subtitle: 'Basic, Intermediate & Advanced levels',
+                          icon: Icons.accessibility_new_rounded,
+                          gradient: AppTheme.trainingGradient,
+                          onTap: () {
+                            Navigator.pop(sheetCtx);
+                            widget.onOpenTraining();
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        _AllModesSheetItem(
+                          title: 'Vibration therapy mode',
+                          subtitle: 'Acupressure vibration therapy',
+                          icon: Icons.favorite,
+                          gradient: AppTheme.therapyGradient,
+                          onTap: () {
+                            Navigator.pop(sheetCtx);
+                            widget.onOpenTherapy();
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        _AllModesSheetItem(
+                          title: 'Breathe mode',
+                          subtitle: 'Rhythmic breathing guidance',
+                          icon: Icons.self_improvement,
+                          gradient: AppTheme.meditationGradient,
+                          onTap: () {
+                            Navigator.pop(sheetCtx);
+                            widget.onOpenMeditation();
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        _AllModesSheetItem(
+                          title: 'Walking mode',
+                          subtitle: 'Walking posture trainer',
+                          icon: Icons.directions_walk,
+                          gradient: AppTheme.alignWalkGradient,
+                          onTap: () {
+                            Navigator.pop(sheetCtx);
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        _AllModesSheetItem(
+                          title: 'Analytics',
+                          subtitle: 'Track your posture progress',
+                          icon: Icons.bar_chart_rounded,
+                          gradient: AppTheme.ridingGradient,
+                          onTap: () {
+                            Navigator.pop(sheetCtx);
+                            widget.onNavigateToPage(2);
+                          },
+                        ),
+                        const SizedBox(height: 20),
+                        const _QuickModeProTipCard(),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -649,9 +945,47 @@ class _HomeDashboardState extends State<HomeDashboard>
               _StaggeredFadeSlide(
                 controller: _controller,
                 delayMs: 0,
-                child: const _DashboardHeader(),
+                child: const _StatsSummaryCard(
+                  items: [
+                    _StatItemData(
+                      value: '82',
+                      unit: '%',
+                      label: 'Good posture',
+                      trendText: '6% from last week',
+                      icon: Icons.accessibility_new_rounded,
+                      gradient: AppTheme.goodPostureGradient,
+                      positiveTrend: true,
+                    ),
+                    _StatItemData(
+                      value: '14',
+                      unit: 'h',
+                      label: 'Tracked time',
+                      trendText: '2.5h more',
+                      icon: Icons.bar_chart_rounded,
+                      gradient: AppTheme.trackingGradient,
+                      positiveTrend: true,
+                    ),
+                    _StatItemData(
+                      value: '9',
+                      label: 'Sessions done',
+                      trendText: '3 more',
+                      icon: Icons.check_circle_rounded,
+                      gradient: AppTheme.meditationGradient,
+                      positiveTrend: true,
+                    ),
+                    _StatItemData(
+                      value: '47',
+                      unit: 'min',
+                      label: 'Therapy time',
+                      trendText: '8min less',
+                      icon: Icons.favorite_rounded,
+                      gradient: AppTheme.therapyGradient,
+                      positiveTrend: false,
+                    ),
+                  ],
+                ),
               ),
-              _kHeaderSpacing,
+              _kSectionSpacing,
               _StaggeredFadeSlide(
                 controller: _controller,
                 delayMs: 100,
@@ -757,8 +1091,11 @@ class _HomeDashboardState extends State<HomeDashboard>
                 delayMs: 350,
                 child: _QuickModesSection(
                   modes: _quickModes,
-                  onViewAll: () => widget.onNavigateToPage(1),
+                  onViewAll: () => _showAllModesSheet(context),
                   onModeTap: widget.onNavigateToPage,
+                  onTherapyModeTap: widget.onOpenTherapy,
+                  onTrainingModeTap: widget.onOpenTraining,
+                  onMeditationModeTap: widget.onOpenMeditation,
                 ),
               ),
               _kSectionSpacing,
@@ -785,19 +1122,19 @@ class _HomeDashboardState extends State<HomeDashboard>
               _kSectionSpacing,
               _StaggeredFadeSlide(
                 controller: _controller,
-                delayMs: 700,
-                child: const _StatsSummaryCard(
-                  items: [
-                    _StatItemData(value: '87%', label: 'Good Posture'),
-                    _StatItemData(value: '6.5h', label: 'Active Time'),
-                  ],
-                ),
+                delayMs: 800,
+                child: _RecentValuesCard(recentValues: _recentValues),
               ),
               _kSectionSpacing,
               _StaggeredFadeSlide(
                 controller: _controller,
-                delayMs: 800,
-                child: _RecentValuesCard(recentValues: _recentValues),
+                delayMs: 900,
+                child: _OfflineSessionsCard(
+                  sessions: _offlineSessions,
+                  isLoading: _isLoadingOfflineSessions,
+                  isSyncing: _deviceManager.isSyncing.value,
+                  onViewAll: () => widget.onNavigateToPage(2),
+                ),
               ),
             ],
           ),
@@ -841,101 +1178,70 @@ class _StaggeredFadeSlide extends StatelessWidget {
   }
 }
 
-class _DashboardHeader extends StatelessWidget {
-  const _DashboardHeader();
+class _StreakChip extends StatelessWidget {
+  const _StreakChip({this.days = 7});
+
+  final int days;
+
+  static const _accent = AppTheme.purple600;
+  static const _surface = Color(0xFFF5F3FF);
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final user = Supabase.instance.client.auth.currentUser;
-    final meta = user?.userMetadata;
-    final fullName =
-        meta?['full_name'] as String? ?? meta?['name'] as String? ?? '';
-    final firstName = fullName.split(' ').first;
-    final avatarUrl =
-        meta?['avatar_url'] as String? ?? meta?['picture'] as String?;
-    final initial = (firstName.isNotEmpty ? firstName : user?.email ?? 'U')
-        .substring(0, 1)
-        .toUpperCase();
-
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                firstName.isNotEmpty ? 'Welcome Back' : 'Welcome Back',
-                style: TextStyle(
-                  color: _kMutedText,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Image.asset(
-                'assets/logo HQ.png',
-                height: 40,
-                fit: BoxFit.contain,
-              ),
-            ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(100),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 18,
+            height: 20,
+            child: CustomPaint(painter: _StreakFlamePainter()),
           ),
-        ),
-        GestureDetector(
-          onTap: () {},
-          child: Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: avatarUrl == null ? AppTheme.brandGradient : null,
-              color: avatarUrl != null ? scheme.surface : null,
-              boxShadow: [
-                BoxShadow(
-                  color: scheme.primary.withValues(alpha: 0.25),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+          const SizedBox(width: 6),
+          Text(
+            '$days days',
+            style: const TextStyle(
+              color: _accent,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              height: 1.1,
             ),
-            clipBehavior: Clip.antiAlias,
-            child: avatarUrl != null
-                ? Image.network(
-                    avatarUrl,
-                    width: 46,
-                    height: 46,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) =>
-                        _InitialAvatar(initial: initial, scheme: scheme),
-                  )
-                : _InitialAvatar(initial: initial, scheme: scheme),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
 
-class _InitialAvatar extends StatelessWidget {
-  final String initial;
-  final ColorScheme scheme;
+class _StreakFlamePainter extends CustomPainter {
+  const _StreakFlamePainter();
 
-  const _InitialAvatar({required this.initial, required this.scheme});
+  static const _fill = AppTheme.purple600;
 
   @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Text(
-        initial,
-        style: TextStyle(
-          color: scheme.onPrimary,
-          fontSize: 20,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final path = Path()
+      ..moveTo(w * 0.5, h * 0.05)
+      ..cubicTo(w * 0.95, h * 0.32, w * 0.92, h * 0.72, w * 0.5, h * 0.96)
+      ..cubicTo(w * 0.08, h * 0.72, w * 0.05, h * 0.32, w * 0.5, h * 0.05)
+      ..close();
+    canvas.drawPath(path, Paint()..color = _fill);
+    canvas.drawCircle(
+      Offset(w * 0.5, h * 0.76),
+      w * 0.11,
+      Paint()..color = Colors.white,
     );
   }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _DeviceStatusCard extends StatelessWidget {
@@ -1216,6 +1522,167 @@ class _RecentValuesCard extends StatelessWidget {
   }
 }
 
+class _OfflineSessionsCard extends StatelessWidget {
+  final List<SessionData> sessions;
+  final bool isLoading;
+  final bool isSyncing;
+  final VoidCallback onViewAll;
+
+  const _OfflineSessionsCard({
+    required this.sessions,
+    required this.isLoading,
+    required this.isSyncing,
+    required this.onViewAll,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return _SurfaceCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Device Sessions',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+              TextButton(onPressed: onViewAll, child: const Text('View all')),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            isSyncing
+                ? 'Syncing stored sessions from device...'
+                : 'Live sessions appear instantly; offline sessions sync on reconnect.',
+            style: const TextStyle(fontSize: 12, color: _kMutedText),
+          ),
+          const SizedBox(height: 12),
+          if (isLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: LinearProgressIndicator(minHeight: 3),
+            )
+          else if (sessions.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'No device sessions yet.',
+                style: TextStyle(fontSize: 12, color: _kMutedText),
+              ),
+            )
+          else
+            ...sessions.map((session) => _OfflineSessionRow(session: session)),
+        ],
+      ),
+    );
+  }
+}
+
+class _OfflineSessionRow extends StatelessWidget {
+  final SessionData session;
+
+  const _OfflineSessionRow({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final isPosture = session.type == SessionType.posture;
+    final color = isPosture ? _kPrimaryBlue : _kBadPostureRed;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              isPosture ? Icons.accessibility_new : Icons.favorite,
+              color: color,
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        session.name,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (session.isLive) ...[
+                      const SizedBox(width: 6),
+                      const _HomeLiveTag(),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${session.time} · ${session.duration}',
+                  style: const TextStyle(fontSize: 12, color: _kMutedText),
+                ),
+              ],
+            ),
+          ),
+          if (session.score != null)
+            Text(
+              '${session.score}%',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HomeLiveTag extends StatelessWidget {
+  const _HomeLiveTag();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: _kBadPostureRed.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: _kBadPostureRed.withValues(alpha: 0.18)),
+      ),
+      child: const Text(
+        'Live',
+        style: TextStyle(
+          color: _kBadPostureRed,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
 class _SurfaceCard extends StatelessWidget {
   final Widget child;
   final EdgeInsets padding;
@@ -1228,18 +1695,18 @@ class _SurfaceCard extends StatelessWidget {
       width: double.infinity,
       padding: padding,
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.60),
-        borderRadius: BorderRadius.circular(AppTheme.radiusLg),
-        border: Border.all(color: AppTheme.glassBorder),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFEEEEF0), width: 0.5),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x0D000000),
-            blurRadius: 24,
+            color: Color(0x14000000),
+            blurRadius: 18,
             offset: Offset(0, 8),
           ),
           BoxShadow(
-            color: Color(0x05000000),
-            blurRadius: 12,
+            color: Color(0x08000000),
+            blurRadius: 4,
             offset: Offset(0, 2),
           ),
         ],
@@ -1286,7 +1753,7 @@ class _ModeControlCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Mode Control',
+            'Default Mode',
             style: TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w600,
@@ -1780,7 +2247,7 @@ class _CalibrationCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Alignment Calibration',
+                      'Calibrate',
                       style: TextStyle(
                         color: AppTheme.textPrimary,
                         fontSize: 16,
@@ -2072,11 +2539,17 @@ class _QuickModesSection extends StatelessWidget {
   final List<_QuickMode> modes;
   final VoidCallback onViewAll;
   final ValueChanged<int> onModeTap;
+  final VoidCallback onTherapyModeTap;
+  final VoidCallback onTrainingModeTap;
+  final VoidCallback onMeditationModeTap;
 
   const _QuickModesSection({
     required this.modes,
     required this.onViewAll,
     required this.onModeTap,
+    required this.onTherapyModeTap,
+    required this.onTrainingModeTap,
+    required this.onMeditationModeTap,
   });
 
   @override
@@ -2120,6 +2593,7 @@ class _QuickModesSection extends StatelessWidget {
         GridView.count(
           crossAxisCount: 2,
           shrinkWrap: true,
+          padding: EdgeInsets.zero,
           physics: const NeverScrollableScrollPhysics(),
           mainAxisSpacing: 16,
           crossAxisSpacing: 16,
@@ -2128,12 +2602,75 @@ class _QuickModesSection extends StatelessWidget {
               .map(
                 (mode) => _QuickModeCard(
                   mode: mode,
-                  onTap: () => onModeTap(mode.targetIndex),
+                  onTap: () {
+                    if (mode.title == 'Therapy') {
+                      onTherapyModeTap();
+                      return;
+                    }
+                    if (mode.title == 'Training') {
+                      onTrainingModeTap();
+                      return;
+                    }
+                    if (mode.title == 'Breathe') {
+                      onMeditationModeTap();
+                      return;
+                    }
+                    onModeTap(mode.targetIndex);
+                  },
                 ),
               )
               .toList(),
         ),
+        _kInnerSpacing,
+        const _QuickModeProTipCard(),
       ],
+    );
+  }
+}
+
+class _QuickModeProTipCard extends StatelessWidget {
+  const _QuickModeProTipCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [Color(0xFF8B5CF6), Color(0xFF6366F1), Color(0xFF3B82F6)],
+        ),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Text('💡', style: TextStyle(fontSize: 16)),
+              SizedBox(width: 8),
+              Text(
+                'Pro Tip',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Start with Training Mode to build awareness, then use Therapy Mode for muscle relief.',
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.white.withValues(alpha: 0.9),
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2194,75 +2731,157 @@ class _StatsSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: AppTheme.brandGradient,
-        borderRadius: BorderRadius.circular(AppTheme.radiusXl),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.blue600.withValues(alpha: 0.35),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "Today's Summary",
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          _kInnerSpacing,
-          Row(
+    assert(items.length == 4, '_StatsSummaryCard expects 4 items');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Expanded(child: _StatItem(item: items[0])),
-              const SizedBox(width: 16),
-              Expanded(child: _StatItem(item: items[1])),
+              Text(
+                "Today's Summary",
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              const _StreakChip(days: 7),
             ],
           ),
-        ],
-      ),
+        ),
+        SizedBox(
+          height: 156,
+          child: ListView.separated(
+            clipBehavior: Clip.none,
+            scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.only(right: 24),
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              return SizedBox(
+                width: 132,
+                child: _SummaryMetricTile(item: items[index]),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
 
-class _StatItem extends StatelessWidget {
+class _SummaryMetricTile extends StatelessWidget {
   final _StatItemData item;
 
-  const _StatItem({required this.item});
+  const _SummaryMetricTile({required this.item});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.18),
-        borderRadius: BorderRadius.circular(16),
-      ),
+    final trendColor = item.positiveTrend
+        ? AppTheme.successText
+        : AppTheme.destructive;
+    final trendBg = item.positiveTrend
+        ? AppTheme.successBg
+        : const Color(0xFFFEF2F2);
+
+    return _SurfaceCard(
+      padding: const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            item.value,
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: Colors.white,
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              gradient: item.gradient,
+              borderRadius: BorderRadius.circular(10),
             ),
+            child: Icon(item.icon, color: Colors.white, size: 18),
           ),
-          const SizedBox(height: 4),
-          Text(
-            item.label,
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.white.withValues(alpha: 0.75),
-            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(
+                      item.value,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimary,
+                        height: 1.05,
+                      ),
+                    ),
+                    if (item.unit != null && item.unit!.isNotEmpty) ...[
+                      const SizedBox(width: 4),
+                      Text(
+                        item.unit!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: AppTheme.textSecondary,
+                          height: 1,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                item.label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: AppTheme.textSecondary,
+                  height: 1.15,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                constraints: const BoxConstraints(maxWidth: 104),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: trendBg,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      item.positiveTrend
+                          ? Icons.arrow_drop_up_rounded
+                          : Icons.arrow_drop_down_rounded,
+                      size: 16,
+                      color: trendColor,
+                    ),
+                    Flexible(
+                      child: Text(
+                        item.trendText,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: trendColor,
+                          height: 1.2,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -2286,9 +2905,22 @@ class _QuickMode {
 
 class _StatItemData {
   final String value;
+  final String? unit;
   final String label;
+  final String trendText;
+  final IconData icon;
+  final LinearGradient gradient;
+  final bool positiveTrend;
 
-  const _StatItemData({required this.value, required this.label});
+  const _StatItemData({
+    required this.value,
+    this.unit,
+    required this.label,
+    required this.trendText,
+    required this.icon,
+    required this.gradient,
+    this.positiveTrend = true,
+  });
 }
 
 class PostureGaugePainter extends CustomPainter {
@@ -2458,5 +3090,90 @@ class PostureGaugePainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
     return oldDelegate is PostureGaugePainter &&
         (oldDelegate.angle != angle || oldDelegate.accentColor != accentColor);
+  }
+}
+
+class _AllModesSheetItem extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final LinearGradient gradient;
+  final VoidCallback onTap;
+
+  const _AllModesSheetItem({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.gradient,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: scheme.outline.withValues(alpha: 0.25)),
+          boxShadow: [
+            BoxShadow(
+              color: scheme.shadow.withValues(alpha: 0.04),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                gradient: gradient,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, color: Colors.white, size: 26),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: scheme.onSurfaceVariant.withValues(alpha: 0.5),
+              size: 22,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

@@ -41,8 +41,8 @@ class ModernNavBar extends StatelessWidget {
             ),
             _NavItem(
               index: 1,
-              label: 'Modes',
-              icon: Icons.tune_rounded,
+              label: 'Discover',
+              icon: Icons.explore_rounded,
               selectedIndex: selectedIndex,
               onTap: onItemSelected,
             ),

@@ -9,16 +9,20 @@ import 'package:correctv1/analytics/analytics_screen.dart';
 /// explicitly.
 class SessionRepository {
   SessionRepository({SupabaseClient? client})
-      : _client = client ?? Supabase.instance.client;
+    : _client = client ?? Supabase.instance.client;
 
   final SupabaseClient _client;
 
   /// Convenience: this week only (Monday 00:00 local -> now).
-  Future<List<SessionData>> fetchThisWeek() => fetchByPeriod('week');
+  Future<List<SessionData>> fetchThisWeek({String? liveSessionId}) =>
+      fetchByPeriod('week', liveSessionId: liveSessionId);
 
   /// period ∈ {'week', 'month', 'all'}.
   /// Unknown periods fall back to 'all' so the UI never breaks on a typo.
-  Future<List<SessionData>> fetchByPeriod(String period) async {
+  Future<List<SessionData>> fetchByPeriod(
+    String period, {
+    String? liveSessionId,
+  }) async {
     final since = _periodStart(period);
 
     final query = _client.from('sessions').select();
@@ -27,7 +31,7 @@ class SessionRepository {
         : query;
 
     final rows = await filtered.order('start_ts', ascending: false);
-    return _mapRows(rows as List<dynamic>);
+    return _mapRows(rows as List<dynamic>, liveSessionId: liveSessionId);
   }
 
   /// Summary stats for the current week.
@@ -56,12 +60,10 @@ class SessionRepository {
       'sessionCount': thisWeek.sessionCount,
       'therapyMinutes': thisWeek.therapyMinutes,
       'deltaVsLastWeek': {
-        'goodPosturePct':
-            thisWeek.goodPosturePct - lastWeek.goodPosturePct,
+        'goodPosturePct': thisWeek.goodPosturePct - lastWeek.goodPosturePct,
         'trackedHours': double.parse(trackedDelta.toStringAsFixed(1)),
         'sessionCount': thisWeek.sessionCount - lastWeek.sessionCount,
-        'therapyMinutes':
-            thisWeek.therapyMinutes - lastWeek.therapyMinutes,
+        'therapyMinutes': thisWeek.therapyMinutes - lastWeek.therapyMinutes,
       },
     };
   }
@@ -70,8 +72,11 @@ class SessionRepository {
   /// Days with no posture sessions return 0 so bar chart shows a gap.
   Future<List<double>> fetchDailyScores(int days) async {
     final now = DateTime.now();
-    final start = DateTime(now.year, now.month, now.day)
-        .subtract(Duration(days: days - 1));
+    final start = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: days - 1));
 
     final rows = await _fetchRowsBetween(start, now, typeFilter: 'posture');
 
@@ -83,7 +88,8 @@ class SessionRepository {
       if (ts == null) continue;
       final local = ts.toLocal();
       final day = DateTime(local.year, local.month, local.day);
-      final idx = day.difference(DateTime(start.year, start.month, start.day))
+      final idx = day
+          .difference(DateTime(start.year, start.month, start.day))
           .inDays;
       if (idx < 0 || idx >= days) continue;
       dailyDur[idx] += _asInt(row['duration_sec']);
@@ -138,17 +144,21 @@ class SessionRepository {
     return today.subtract(Duration(days: today.weekday - 1));
   }
 
-  List<SessionData> _mapRows(List<dynamic> rows) {
+  List<SessionData> _mapRows(List<dynamic> rows, {String? liveSessionId}) {
     final out = <SessionData>[];
     for (var i = 0; i < rows.length; i++) {
       final row = rows[i] as Map<String, dynamic>;
-      final mapped = _rowToSession(row, i);
+      final mapped = _rowToSession(row, i, liveSessionId: liveSessionId);
       if (mapped != null) out.add(mapped);
     }
     return out;
   }
 
-  SessionData? _rowToSession(Map<String, dynamic> row, int index) {
+  SessionData? _rowToSession(
+    Map<String, dynamic> row,
+    int index, {
+    String? liveSessionId,
+  }) {
     final typeStr = row['type']?.toString() ?? '';
     final isPosture = typeStr == 'posture';
     final type = isPosture ? SessionType.posture : SessionType.therapy;
@@ -164,9 +174,11 @@ class SessionRepository {
 
     final pattern = isPosture ? null : _asIntOrNull(row['therapy_pattern']);
     final alerts = isPosture ? _asIntOrNull(row['wrong_count']) : null;
+    final dbId = row['id']?.toString();
 
     return SessionData(
       id: index,
+      dbId: dbId,
       type: type,
       name: isPosture ? 'Posture training' : 'Vibration therapy',
       time: _formatRelativeTime(startTs),
@@ -175,6 +187,7 @@ class SessionRepository {
       alerts: alerts,
       score: score,
       pattern: pattern,
+      isLive: dbId != null && dbId == liveSessionId,
     );
   }
 
@@ -204,9 +217,7 @@ class SessionRepository {
     }
 
     final pct = totalPostureDur > 0
-        ? (100 - (totalWrongDur / totalPostureDur * 100))
-            .round()
-            .clamp(0, 100)
+        ? (100 - (totalWrongDur / totalPostureDur * 100)).round().clamp(0, 100)
         : 0;
 
     final trackedHoursNum = trackedSec / 3600.0;
@@ -248,8 +259,18 @@ class SessionRepository {
   String _formatShortDate(DateTime? ts) {
     if (ts == null) return '—';
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${months[ts.month - 1]} ${ts.day}';
   }
