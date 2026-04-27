@@ -52,6 +52,16 @@ class DeviceManager {
       activeSessionId: activeSessionId,
       onSessionChanged: _onLiveSessionChanged,
     )..start();
+
+    // If already connected when init() runs (e.g. fast auto-reconnect
+    // completed before this wiring), kick off the sync flow now.
+    if (_btManager.deviceService.connectionStatus.value ==
+        DeviceConnectionStatus.connected) {
+      debugPrint('DeviceManager: already connected at init — starting sync');
+      _lastConnected = true;
+      _liveSessionRecorder?.setEnabled(false);
+      unawaited(_startSync());
+    }
   }
 
   void _onLiveSessionChanged() {
@@ -112,7 +122,8 @@ class DeviceManager {
 
     if (_btManager.deviceService.connectionStatus.value !=
         DeviceConnectionStatus.connected) {
-      debugPrint('DeviceManager: disconnected during delay, aborting sync');
+      debugPrint('DeviceManager: disconnected during delay, aborting sync — enabling live recorder');
+      _liveSessionRecorder?.setEnabled(true);
       return;
     }
 
@@ -127,6 +138,10 @@ class DeviceManager {
           debugPrint('DeviceManager: sync complete — enabling live recorder');
           isSyncing.value = false;
           syncCompletedTick.value++;
+          _liveSessionRecorder?.setEnabled(true);
+        } else if (p.error != null) {
+          debugPrint('DeviceManager: sync error: ${p.error} — enabling live recorder');
+          isSyncing.value = false;
           _liveSessionRecorder?.setEnabled(true);
         }
       },

@@ -6,7 +6,9 @@ import 'package:correctv1/bluetooth/bluetooth_service_manager.dart';
 import 'package:correctv1/bluetooth/device_connect_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:correctv1/home/meditation_page.dart';
 import 'package:correctv1/discover/discover_page.dart';
 import 'package:correctv1/home/therapy_page.dart';
@@ -421,9 +423,83 @@ class _HomeDashboardState extends State<HomeDashboard>
     }
 
     if (!mounted) return;
+
+    if (!await _ensureBleReady()) return;
+
+    if (!mounted) return;
     await Navigator.of(
       context,
     ).push<bool>(MaterialPageRoute(builder: (_) => const DeviceConnectPage()));
+  }
+
+  /// Ensures Bluetooth is on and permissions are granted before proceeding.
+  /// Returns `true` when BLE is ready; `false` if the user declined or
+  /// something couldn't be resolved.
+  Future<bool> _ensureBleReady() async {
+    final readiness = await _deviceService.checkReadiness();
+    if (!mounted) return false;
+
+    switch (readiness) {
+      case BleReadiness.ready:
+        return true;
+
+      case BleReadiness.bluetoothUnsupported:
+        _showBleSnackBar('Bluetooth is not supported on this device.');
+        return false;
+
+      case BleReadiness.bluetoothOff:
+        try {
+          // On Android this surfaces the native "Allow app to turn on
+          // Bluetooth?" system dialog — no custom prompt needed.
+          await FlutterBluePlus.turnOn();
+
+          // Wait for the adapter to actually come up (the user might still be
+          // looking at the system dialog, so poll for a few seconds).
+          final on = await FlutterBluePlus.adapterState
+              .where((s) => s == BluetoothAdapterState.on)
+              .first
+              .timeout(const Duration(seconds: 8));
+          if (on == BluetoothAdapterState.on) return true;
+        } catch (_) {
+          // User declined the system dialog or timeout.
+        }
+        if (!mounted) return false;
+        _showBleSnackBar(
+          'Bluetooth is required to connect. Please enable it and try again.',
+        );
+        return false;
+
+      case BleReadiness.permissionDenied:
+        _showBleSnackBar(
+          'Bluetooth permissions are required. Please grant them and try again.',
+        );
+        return false;
+
+      case BleReadiness.permissionPermanentlyDenied:
+        if (!mounted) return false;
+        _showBleSnackBar(
+          'Bluetooth permissions were denied. Opening settings…',
+        );
+        await openAppSettings();
+        return false;
+    }
+  }
+
+  void _showBleSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
   }
 
   Future<void> _showConnectedSheet() async {
@@ -1199,8 +1275,7 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
     'Focus',
     'Breathe',
     'Balance',
-    'Steady',
-    'Posture',
+    'Keep Going',
     'Stand tall',
     'Be present',
     'Reset',
@@ -1209,6 +1284,15 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
     'Stay aligned',
     'Be in the moment',
     'Posture Matters',
+    'Just do it',
+    'Move Better',
+    'Build Good Habits',
+    'Rise Above Limits',
+    'Sit Like Human',
+    'Straighten Up Champ',
+    'Posture Police Watching',
+    'Neck Says Ouch',
+    'Look Less Potato',
   ];
 
   String _chosenText = '';
@@ -1381,7 +1465,7 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
             children: [
               SvgPicture.asset(
                 'assets/logosvg.svg',
-                height: 32,
+                height: 30,
                 fit: BoxFit.contain,
                 alignment: Alignment.centerLeft,
               ),
@@ -1454,10 +1538,10 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
     final breathe = isConnected ? 0.04 * _pulseAnim.value : 0.0;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.65),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: accentColor.withValues(alpha: isPending ? 0.35 : 0.15),
           width: 1,
@@ -1482,11 +1566,12 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
         ],
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           // ── Animated icon with spinner ──────────────────────────
           SizedBox(
-            width: 28,
-            height: 28,
+            width: 24,
+            height: 24,
             child: Stack(
               alignment: Alignment.center,
               children: [
@@ -1494,13 +1579,13 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
                   Transform.rotate(
                     angle: _spinCtrl.value * 2 * math.pi,
                     child: CustomPaint(
-                      size: const Size(28, 28),
+                      size: const Size(24, 24),
                       painter: _ArcPainter(color: accentColor),
                     ),
                   ),
                 Container(
-                  width: 28,
-                  height: 28,
+                  width: 24,
+                  height: 24,
                   decoration: BoxDecoration(
                     color: accentColor.withValues(alpha: 0.10 + breathe),
                     shape: BoxShape.circle,
@@ -1516,7 +1601,7 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
                     child: Icon(
                       statusIcon,
                       key: ValueKey(statusIcon),
-                      size: 15,
+                      size: 13,
                       color: accentColor,
                     ),
                   ),
@@ -1524,44 +1609,57 @@ class _TopHeaderBarState extends State<_TopHeaderBar>
               ],
             ),
           ),
-          const SizedBox(width: 10),
-          // ── Status label ───────────────────────────────────────
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
-            child: Text(
-              statusLabel,
-              key: ValueKey(statusLabel),
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: accentColor,
-                letterSpacing: -0.1,
+          const SizedBox(width: 8),
+          // ── Status label + battery below ────────────────────────
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 250),
+                child: Text(
+                  statusLabel,
+                  key: ValueKey(statusLabel),
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: accentColor,
+                    letterSpacing: -0.1,
+                  ),
+                ),
               ),
-            ),
+              AnimatedSize(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeInOut,
+                alignment: Alignment.topLeft,
+                clipBehavior: Clip.hardEdge,
+                child: isConnected
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(batteryIcon, size: 12, color: batteryColor),
+                            const SizedBox(width: 3),
+                            Text(
+                              '${widget.batteryLevel}%',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: batteryColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ],
           ),
-          // ── Battery (when connected) ───────────────────────────
-          if (isConnected) ...[
-            Container(
-              width: 1,
-              height: 16,
-              color: AppTheme.border.withValues(alpha: 0.5),
-            ),
-            const SizedBox(width: 10),
-            Icon(batteryIcon, size: 14, color: batteryColor),
-            const SizedBox(width: 3),
-            Text(
-              '${widget.batteryLevel}%',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: batteryColor,
-              ),
-            ),
-          ],
           const SizedBox(width: 4),
           Icon(
             Icons.chevron_right_rounded,
-            size: 18,
+            size: 16,
             color: AppTheme.textMuted.withValues(alpha: 0.5),
           ),
         ],

@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
+import 'package:correctv1/services/session_database.dart';
+import 'package:correctv1/services/session_sync_service.dart';
 
 class LiveSessionRecorder {
   LiveSessionRecorder({
@@ -121,39 +123,49 @@ class LiveSessionRecorder {
     final initialPattern = type == 'therapy'
         ? _patternIndexFrom(reading.therapyPattern)
         : null;
-    final row = <String, dynamic>{
-      'user_id': user.id,
-      'type': type,
-      'start_ts': startAt.toUtc().toIso8601String(),
-      'duration_sec': initialDurationSec,
-      'wrong_count': type == 'posture' ? reading.liveSessionBadCount : null,
-      'wrong_dur_sec': type == 'posture' ? 0 : null,
-      'therapy_pattern': initialPattern,
-      'ts_synced': true,
-      'posture_events': type == 'posture' ? <Map<String, int>>[] : null,
-      'therapy_patterns': type == 'therapy' && initialPattern != null
-          ? <int>[initialPattern]
-          : null,
-    };
 
     try {
-      final existing = await _findExistingSession(type, startAt);
-      String? id;
-      if (existing != null) {
-        id = existing.id;
-        await _client.from('sessions').update(row).eq('id', id);
+      final db = SessionDatabase.instance;
+      final existingId = await db.findExistingByStartTs(
+        user.id, type, startAt, const Duration(seconds: 10),
+      );
+
+      String id;
+      if (existingId != null) {
+        id = existingId;
+        await db.updateSession(id, {
+          'duration_sec': initialDurationSec,
+          'wrong_count': type == 'posture' ? reading.liveSessionBadCount : null,
+          'wrong_dur_sec': type == 'posture' ? 0 : null,
+          'therapy_pattern': initialPattern,
+          'ts_synced': true,
+          'posture_events': type == 'posture' ? <Map<String, int>>[] : null,
+          'therapy_patterns': type == 'therapy' && initialPattern != null
+              ? <int>[initialPattern]
+              : null,
+        });
         debugPrint(
           'LiveSessionRecorder: reusing existing $type session id=$id',
         );
       } else {
-        id = await _insertSession(row);
+        id = await db.insertSession({
+          'user_id': user.id,
+          'type': type,
+          'start_ts': startAt.toUtc().toIso8601String(),
+          'duration_sec': initialDurationSec,
+          'wrong_count': type == 'posture' ? reading.liveSessionBadCount : null,
+          'wrong_dur_sec': type == 'posture' ? 0 : null,
+          'therapy_pattern': initialPattern,
+          'ts_synced': true,
+          'posture_events': type == 'posture' ? <Map<String, int>>[] : null,
+          'therapy_patterns': type == 'therapy' && initialPattern != null
+              ? <int>[initialPattern]
+              : null,
+          'sync_status': 0,
+        });
         debugPrint(
           'LiveSessionRecorder: inserted new $type session id=$id',
         );
-      }
-      if (id == null || id.isEmpty) {
-        debugPrint('LiveSessionRecorder: session id is null/empty, aborting');
-        return;
       }
 
       _active = _LiveSession(id: id, type: type, startedAt: startAt)
@@ -168,6 +180,7 @@ class LiveSessionRecorder {
       }
       _lastUpdateAt = now;
       _onSessionChanged?.call();
+      SessionSyncService.instance.triggerSync();
       debugPrint(
         'LiveSessionRecorder: started $type session id=$id '
         'elapsed=${initialDurationSec}s startAt=$startAt',
@@ -191,8 +204,6 @@ class LiveSessionRecorder {
 
       final slouchOffset = active.pendingSlouchOffsetSec;
       if (slouchOffset != null) {
-        // Mark as still-bad-at-end with the firmware's sentinel so the UI
-        // renders an open-ended slouch instead of a zero-length pair.
         active.postureEvents.add({'s': slouchOffset, 'c': 0xFFFF});
         active.pendingSlouchOffsetSec = null;
       }
@@ -214,7 +225,7 @@ class LiveSessionRecorder {
 
   Future<void> _deleteShortSession(_LiveSession active) async {
     try {
-      await _client.from('sessions').delete().eq('id', active.id);
+      await SessionDatabase.instance.deleteSession(active.id);
       debugPrint(
         'LiveSessionRecorder: deleted short ${active.type} session '
         'id=${active.id}',
@@ -232,9 +243,6 @@ class LiveSessionRecorder {
       final pattern = _patternIndexFrom(reading.therapyPattern);
       if (pattern != null) {
         active.therapyPattern = pattern;
-        // Append only on transitions so the sequence mirrors the firmware's
-        // pattern-played history rather than duplicating the same index for
-        // every BLE tick.
         final seq = active.therapyPatternSequence;
         if (seq.isEmpty || seq.last != pattern) {
           seq.add(pattern);
@@ -307,28 +315,25 @@ class LiveSessionRecorder {
                       .inSeconds
                       .clamp(0, 1 << 30)
                       .toInt());
-        await _client
-            .from('sessions')
-            .update({
-              'duration_sec': durationSec,
-              'wrong_count': active.type == 'posture'
-                  ? active.wrongCount
-                  : null,
-              'wrong_dur_sec': active.type == 'posture'
-                  ? wrongDurationSec
-                  : null,
-              'therapy_pattern': active.type == 'therapy'
-                  ? active.therapyPattern
-                  : null,
-              'posture_events': active.type == 'posture'
-                  ? active.postureEvents
-                  : null,
-              'therapy_patterns':
-                  active.type == 'therapy' && active.therapyPatternSequence.isNotEmpty
-                  ? active.therapyPatternSequence
-                  : null,
-            })
-            .eq('id', active.id);
+        await SessionDatabase.instance.updateSession(active.id, {
+          'duration_sec': durationSec,
+          'wrong_count': active.type == 'posture'
+              ? active.wrongCount
+              : null,
+          'wrong_dur_sec': active.type == 'posture'
+              ? wrongDurationSec
+              : null,
+          'therapy_pattern': active.type == 'therapy'
+              ? active.therapyPattern
+              : null,
+          'posture_events': active.type == 'posture'
+              ? active.postureEvents
+              : null,
+          'therapy_patterns':
+              active.type == 'therapy' && active.therapyPatternSequence.isNotEmpty
+              ? active.therapyPatternSequence
+              : null,
+        });
         _lastUpdateAt = now;
         _onSessionChanged?.call();
       } while (_dirtyWhileWriting);
@@ -337,40 +342,6 @@ class LiveSessionRecorder {
     } finally {
       _writeInFlight = false;
     }
-  }
-
-  Future<String?> _insertSession(Map<String, dynamic> row) async {
-    final inserted = await _client
-        .from('sessions')
-        .insert(row)
-        .select('id')
-        .single();
-    return inserted['id']?.toString();
-  }
-
-  Future<_ExistingSession?> _findExistingSession(
-    String type,
-    DateTime startAt,
-  ) async {
-    final user = _client.auth.currentUser;
-    if (user == null) return null;
-    final windowStart = startAt.subtract(const Duration(seconds: 10));
-    final windowEnd = startAt.add(const Duration(seconds: 10));
-    final rows = await _client
-        .from('sessions')
-        .select('id,start_ts')
-        .eq('user_id', user.id)
-        .eq('type', type)
-        .gte('start_ts', windowStart.toUtc().toIso8601String())
-        .lte('start_ts', windowEnd.toUtc().toIso8601String())
-        .order('start_ts', ascending: false)
-        .limit(1);
-
-    if (rows.isEmpty) return null;
-    final row = rows.first;
-    final id = row['id']?.toString();
-    if (id == null || id.isEmpty) return null;
-    return _ExistingSession(id: id);
   }
 
   DateTime _startTimeFor(PostureReading reading, DateTime now) {
@@ -430,12 +401,6 @@ class LiveSessionRecorder {
   }
 }
 
-class _ExistingSession {
-  _ExistingSession({required this.id});
-
-  final String id;
-}
-
 class _LiveSession {
   _LiveSession({required this.id, required this.type, required this.startedAt});
 
@@ -446,15 +411,7 @@ class _LiveSession {
   int wrongDurationSec = 0;
   int? therapyPattern;
 
-  /// Posture event timeline. Each entry is the {s,c} pair the firmware
-  /// would have written: `s` = slouch start (sec from session start),
-  /// `c` = correction time (or 0xFFFF if not yet corrected).
   final List<Map<String, int>> postureEvents = <Map<String, int>>[];
-
-  /// Offset (sec from session start) of an in-flight slouch that hasn't
-  /// been corrected yet. `null` while posture is good.
   int? pendingSlouchOffsetSec;
-
-  /// Therapy patterns played during the session, in order seen.
   List<int> therapyPatternSequence = <int>[];
 }

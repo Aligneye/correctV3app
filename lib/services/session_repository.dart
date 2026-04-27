@@ -1,12 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/analytics/analytics_screen.dart';
+import 'package:correctv1/services/session_database.dart';
 
-/// Thin read layer over the `sessions` Supabase table.
+/// Thin read layer over the local `sessions` SQLite table.
 ///
-/// All queries are scoped to the current `auth.uid()` via RLS (see
-/// `lib/supabase/schema.sql`) so we never need to pass the user id
-/// explicitly.
+/// All queries are scoped to the current `auth.uid()`. The local database is
+/// the source of truth for reads; background sync pushes data to Supabase.
 class SessionRepository {
   SessionRepository({SupabaseClient? client})
     : _client = client ?? Supabase.instance.client;
@@ -23,21 +24,20 @@ class SessionRepository {
     String period, {
     String? liveSessionId,
   }) async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return [];
+
+    await _ensureCacheWarmed(userId);
+
     final since = _periodStart(period);
-
-    final query = _client.from('sessions').select();
-    final filtered = since != null
-        ? query.gte('start_ts', since.toUtc().toIso8601String())
-        : query;
-
-    final rows = await filtered.order('start_ts', ascending: false);
-    return _mapRows(rows as List<dynamic>, liveSessionId: liveSessionId);
+    final rows = await SessionDatabase.instance.fetchByUser(
+      userId,
+      since: since,
+    );
+    return _mapRows(rows, liveSessionId: liveSessionId);
   }
 
   /// Summary stats for the current week.
-  /// Returned map keys match what the stat-card widgets expect:
-  /// `goodPosturePct`, `trackedHours`, `sessionCount`, `therapyMinutes`,
-  /// `deltaVsLastWeek` (map of the same four keys with signed deltas).
   Future<Map<String, dynamic>> fetchWeeklyStats() async {
     final now = DateTime.now();
     final thisWeekStart = _startOfWeek(now);
@@ -49,8 +49,6 @@ class SessionRepository {
     final thisWeek = _aggregate(thisWeekRows);
     final lastWeek = _aggregate(lastWeekRows);
 
-    // trackedHours is a formatted string for display; deltas compare the raw
-    // numeric value so up/down arrows are meaningful.
     final trackedDelta =
         thisWeek.trackedHoursNumeric - lastWeek.trackedHoursNumeric;
 
@@ -69,7 +67,6 @@ class SessionRepository {
   }
 
   /// Daily good-posture % for the last [days] calendar days (oldest first).
-  /// Days with no posture sessions return 0 so bar chart shows a gap.
   Future<List<double>> fetchDailyScores(int days) async {
     final now = DateTime.now();
     final start = DateTime(
@@ -106,23 +103,47 @@ class SessionRepository {
 
   // ── internals ──────────────────────────────────────────────────────────────
 
+  bool _cacheWarmed = false;
+
+  Future<void> _ensureCacheWarmed(String userId) async {
+    if (_cacheWarmed) return;
+    _cacheWarmed = true;
+
+    final hasLocal = await SessionDatabase.instance.hasDataForUser(userId);
+    if (hasLocal) return;
+
+    // First time: pull existing sessions from Supabase into local cache.
+    try {
+      final rows = await _client
+          .from('sessions')
+          .select()
+          .order('start_ts', ascending: false);
+      for (final row in (rows as List<dynamic>)) {
+        await SessionDatabase.instance
+            .upsertFromRemote(row as Map<String, dynamic>);
+      }
+      debugPrint('SessionRepository: cache warmed with ${rows.length} rows');
+    } catch (e) {
+      debugPrint('SessionRepository: cache warm failed (offline?): $e');
+    }
+  }
+
   Future<List<Map<String, dynamic>>> _fetchRowsBetween(
     DateTime startInclusive,
     DateTime endExclusive, {
     String? typeFilter,
   }) async {
-    var q = _client
-        .from('sessions')
-        .select()
-        .gte('start_ts', startInclusive.toUtc().toIso8601String())
-        .lt('start_ts', endExclusive.toUtc().toIso8601String());
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return [];
 
-    if (typeFilter != null) {
-      q = q.eq('type', typeFilter);
-    }
+    await _ensureCacheWarmed(userId);
 
-    final rows = await q.order('start_ts', ascending: false);
-    return (rows as List<dynamic>).cast<Map<String, dynamic>>();
+    return SessionDatabase.instance.fetchBetween(
+      userId,
+      startInclusive,
+      endExclusive,
+      typeFilter: typeFilter,
+    );
   }
 
   DateTime? _periodStart(String period) {
@@ -140,7 +161,6 @@ class SessionRepository {
 
   DateTime _startOfWeek(DateTime now) {
     final today = DateTime(now.year, now.month, now.day);
-    // DateTime.weekday: Monday = 1 ... Sunday = 7.
     return today.subtract(Duration(days: today.weekday - 1));
   }
 
@@ -176,8 +196,8 @@ class SessionRepository {
 
     final pattern = isPosture ? null : _asIntOrNull(row['therapy_pattern']);
     final alerts = isPosture ? _asIntOrNull(row['wrong_count']) : null;
-    final dbId = row['id']?.toString();
-    final tsSynced = row['ts_synced'] == true;
+    final dbId = (row['remote_id'] ?? row['id'])?.toString();
+    final tsSynced = row['ts_synced'] == true || row['ts_synced'] == 1;
 
     final postureEvents = isPosture
         ? _parsePostureEvents(row['posture_events'])
@@ -232,8 +252,6 @@ class SessionRepository {
     return out.isEmpty ? null : out;
   }
 
-  /// Mirrors the canonical formula from the BLE sync layer so numbers shown
-  /// in Analytics match what is stored on device.
   int _scoreFrom(int durationSec, int wrongDurSec) {
     if (durationSec <= 0) return 100;
     return (100 - (wrongDurSec / durationSec * 100)).round().clamp(0, 100);
@@ -300,18 +318,8 @@ class SessionRepository {
   String _formatShortDate(DateTime? ts) {
     if (ts == null) return '—';
     const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
     ];
     return '${months[ts.month - 1]} ${ts.day}';
   }

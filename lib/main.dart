@@ -3,6 +3,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/auth/auth_gate.dart';
 import 'package:correctv1/home/home_page.dart';
+import 'package:correctv1/services/session_database.dart';
+import 'package:correctv1/services/session_sync_service.dart';
 import 'package:correctv1/theme/app_theme.dart';
 
 Future<void> main() async {
@@ -22,6 +24,9 @@ Future<void> main() async {
   if (isSupabaseConfigured) {
     await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   }
+
+  await SessionDatabase.instance.initialize();
+  SessionSyncService.instance.start();
 
   runApp(MyApp(isSupabaseConfigured: isSupabaseConfigured));
 }

@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:correctv1/services/session_database.dart';
+import 'package:correctv1/services/session_sync_service.dart';
+
 /// UUIDs of the firmware's session-sync characteristics.
 /// Must match `src/bluetooth_manager.cpp` exactly.
 const String _kSessionDataUuid = '0000aa01-0000-1000-8000-00805f9b34fb';
@@ -168,14 +171,17 @@ class BleSessionSync {
 
       if (_dataChar == null || _ackChar == null) {
         debugPrint(
-          'BleSessionSync: sync characteristics not found '
+          '[SESSION] ⚠️ Sync characteristics NOT found on device — '
+          'firmware may not support offline session sync '
           '(data=${_dataChar != null}, ack=${_ackChar != null})',
         );
         _emitComplete();
         return;
       }
+      debugPrint('[SESSION] Found sync characteristics (data + ack)');
 
-      await _dataChar!.setNotifyValue(true);
+      // Subscribe BEFORE enabling notifications to avoid missing the first
+      // packet if it arrives between setNotifyValue() completing and listen().
       _notifySub = _dataChar!.lastValueStream.listen(
         _onPacket,
         onError: (Object e) {
@@ -183,6 +189,7 @@ class BleSessionSync {
           _emitError(e);
         },
       );
+      await _dataChar!.setNotifyValue(true);
 
       await _writeAck(_kSessionSyncStart);
       debugPrint('[SESSION] Sync start requested over BLE');
@@ -192,6 +199,7 @@ class BleSessionSync {
     } catch (e) {
       debugPrint('BleSessionSync: startSync failed: $e');
       _emitError(e);
+      _emitComplete();
     }
   }
 
@@ -210,11 +218,16 @@ class BleSessionSync {
 
   Future<void> _onPacket(List<int> data) async {
     if (data.length < 20) {
-      debugPrint(
-        'BleSessionSync: short packet (${data.length} bytes), ignoring',
-      );
+      if (data.isNotEmpty) {
+        debugPrint(
+          'BleSessionSync: short packet (${data.length} bytes), ignoring',
+        );
+      }
       return;
     }
+
+    // Ignore all-zero packets (initial cached value from the characteristic).
+    if (data.every((b) => b == 0)) return;
 
     _armIdleTimer();
     final bytes = Uint8List.fromList(data);
@@ -380,35 +393,33 @@ class BleSessionSync {
     };
 
     try {
+      final db = SessionDatabase.instance;
       final existingId = await _findExistingRowId(pending);
       if (existingId != null) {
-        await _supabase.from('sessions').update(row).eq('id', existingId);
+        await db.updateSession(existingId, row);
         debugPrint(
-          '[SESSION] Upserted (update) ✓ │ idx=${pending.index} '
+          '[SESSION] Local upsert (update) ✓ │ idx=${pending.index} '
           'id=$existingId type=${pending.type}',
         );
       } else {
-        await _supabase.from('sessions').insert(row);
+        final id = await db.insertSession({...row, 'sync_status': 0});
         debugPrint(
-          '[SESSION] Upserted (insert) ✓ │ idx=${pending.index} '
-          'type=${pending.type}',
+          '[SESSION] Local upsert (insert) ✓ │ idx=${pending.index} '
+          'id=$id type=${pending.type}',
         );
       }
       _pending = null;
+      SessionSyncService.instance.triggerSync();
       return true;
     } catch (e) {
       debugPrint(
-        '[SESSION] Upsert FAILED ✗ │ idx=${pending.index}  error=$e',
+        '[SESSION] Local upsert FAILED ✗ │ idx=${pending.index}  error=$e',
       );
       _emitError(e);
       return false;
     }
   }
 
-  /// Stitches an incoming offline-sync session onto an existing row whose
-  /// `start_ts` is within ±10s — handles the "BT dropped mid-session" case
-  /// where [LiveSessionRecorder] already created a partial row that the
-  /// firmware now wants to overwrite with the full record.
   Future<String?> _findExistingRowId(_PendingSession pending) async {
     final iso = pending.startTsIso;
     if (iso == null) return null;
@@ -416,22 +427,13 @@ class BleSessionSync {
     final user = _supabase.auth.currentUser;
     if (user == null) return null;
 
-    final start = DateTime.parse(iso).subtract(_dedupeWindow);
-    final end = DateTime.parse(iso).add(_dedupeWindow);
-
     try {
-      final rows = await _supabase
-          .from('sessions')
-          .select('id')
-          .eq('user_id', user.id)
-          .eq('type', pending.type)
-          .gte('start_ts', start.toUtc().toIso8601String())
-          .lte('start_ts', end.toUtc().toIso8601String())
-          .order('start_ts', ascending: false)
-          .limit(1);
-
-      if (rows.isEmpty) return null;
-      return rows.first['id']?.toString();
+      return await SessionDatabase.instance.findExistingByStartTs(
+        user.id,
+        pending.type,
+        DateTime.parse(iso),
+        _dedupeWindow,
+      );
     } catch (e) {
       debugPrint('BleSessionSync: dedupe lookup failed: $e');
       return null;
