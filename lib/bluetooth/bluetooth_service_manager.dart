@@ -198,11 +198,21 @@ class BluetoothServiceManager {
     _isAutoReconnecting = true;
     try {
       debugPrint('Attempting to connect to Bluetooth device...');
-      // Use manual connect (not auto-connect) when user taps connect button
       await _deviceService.connect(isAutoConnect: false);
     } catch (e) {
       debugPrint('Connection failed: $e');
-      if (_shouldMaintainConnection) {
+      final msg = e.toString().toLowerCase();
+      final isDenied = msg.contains('permission') ||
+          msg.contains('bluetooth is not enabled') ||
+          msg.contains('not granted');
+      if (isDenied) {
+        // User denied — stop trying entirely.
+        _shouldMaintainConnection = false;
+        autoReconnectEnabled.value = false;
+        _reconnectTimer?.cancel();
+        _reconnectTimer = null;
+        debugPrint('User denied BLE — stopping all reconnect attempts');
+      } else if (_shouldMaintainConnection) {
         _scheduleReconnect();
       }
     } finally {

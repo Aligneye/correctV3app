@@ -442,42 +442,51 @@ class AlignEyeDeviceService {
     }
 
     _isConnecting = true;
-    connectionStatus.value = DeviceConnectionStatus.connecting;
     isAutoConnectionAttempt.value = isAutoConnect;
-
-    // Set connection timeout
-    _connectionTimeoutTimer?.cancel();
-    _connectionTimeoutTimer = Timer(_connectionTimeout, () {
-      if (_isConnecting) {
-        debugPrint('Connection timeout reached');
-        _isConnecting = false;
-        connectionStatus.value = DeviceConnectionStatus.disconnected;
-        disconnect();
-      }
-    });
 
     try {
       final supported = await FlutterBluePlus.isSupported;
       if (!supported) {
         _isConnecting = false;
-        _connectionTimeoutTimer?.cancel();
         connectionStatus.value = DeviceConnectionStatus.disconnected;
         return;
       }
 
-      // Check and request permissions first
-      final hasPermissions = await _ensurePermissions();
-      if (!hasPermissions) {
-        debugPrint('Required permissions not granted, cannot proceed');
-        _isConnecting = false;
-        _connectionTimeoutTimer?.cancel();
-        connectionStatus.value = DeviceConnectionStatus.disconnected;
-        throw Exception(
-          'Required permissions not granted. Please grant Location and Bluetooth permissions in app settings.',
-        );
+      if (isAutoConnect) {
+        // Auto-connect: only proceed if BLE is already on and permissions
+        // are granted. Never show any system dialog.
+        if (!await _isBleReadySilent()) {
+          debugPrint('Auto-connect: BLE not ready, skipping silently');
+          _isConnecting = false;
+          return;
+        }
+      } else {
+        // Manual connect: request permissions and turn on Bluetooth.
+        final hasPermissions = await _ensurePermissions();
+        if (!hasPermissions) {
+          debugPrint('Required permissions not granted, cannot proceed');
+          _isConnecting = false;
+          _connectionTimeoutTimer?.cancel();
+          connectionStatus.value = DeviceConnectionStatus.disconnected;
+          throw Exception(
+            'Required permissions not granted. Please grant Location and Bluetooth permissions in app settings.',
+          );
+        }
+
+        await _ensureBluetoothOn();
       }
 
-      await _ensureBluetoothOn();
+      // BLE is ready — now signal connecting state and arm timeout.
+      connectionStatus.value = DeviceConnectionStatus.connecting;
+      _connectionTimeoutTimer?.cancel();
+      _connectionTimeoutTimer = Timer(_connectionTimeout, () {
+        if (_isConnecting) {
+          debugPrint('Connection timeout reached');
+          _isConnecting = false;
+          connectionStatus.value = DeviceConnectionStatus.disconnected;
+          disconnect();
+        }
+      });
 
       // Verify Bluetooth is actually on with retry
       BluetoothAdapterState adapterState = BluetoothAdapterState.unknown;
@@ -756,8 +765,14 @@ class AlignEyeDeviceService {
       await disconnect();
       connectionStatus.value = DeviceConnectionStatus.disconnected;
 
-      // Retry connection if we haven't exceeded max retries
-      if (_connectionRetryCount < _maxRetries &&
+      // Only retry for transient failures (scan timeout, connection drop).
+      // Never retry when user denied permissions or Bluetooth.
+      final msg = e.toString().toLowerCase();
+      final isDenied = msg.contains('permission') ||
+          msg.contains('bluetooth is not enabled') ||
+          msg.contains('not granted');
+      if (!isDenied &&
+          _connectionRetryCount < _maxRetries &&
           !isAutoConnect &&
           !_userInitiatedDisconnect) {
         _connectionRetryCount++;
@@ -846,44 +861,55 @@ class AlignEyeDeviceService {
     currentReading.dispose();
   }
 
-  Future<void> _ensureBluetoothOn() async {
-    for (int attempt = 0; attempt < 3; attempt++) {
-      final state = await FlutterBluePlus.adapterState.first.timeout(
+  /// Silent readiness check — returns true only if permissions are already
+  /// granted and Bluetooth is on. Never shows any system dialog.
+  Future<bool> _isBleReadySilent() async {
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final scan = await Permission.bluetoothScan.status;
+        final connect = await Permission.bluetoothConnect.status;
+        if (!scan.isGranted || !connect.isGranted) return false;
+      }
+      final adapter = await FlutterBluePlus.adapterState.first.timeout(
         const Duration(seconds: 2),
       );
-      debugPrint('Bluetooth adapter state (attempt ${attempt + 1}): $state');
+      return adapter == BluetoothAdapterState.on;
+    } catch (_) {
+      return false;
+    }
+  }
 
-      if (state == BluetoothAdapterState.on) {
-        return;
-      }
+  Future<void> _ensureBluetoothOn() async {
+    final state = await FlutterBluePlus.adapterState.first.timeout(
+      const Duration(seconds: 2),
+    );
 
-      if (state == BluetoothAdapterState.off &&
-          defaultTargetPlatform == TargetPlatform.android) {
-        debugPrint('Bluetooth is off, turning on...');
-        try {
-          await FlutterBluePlus.turnOn();
-          // Wait for Bluetooth to turn on
-          for (int i = 0; i < 5; i++) {
-            await Future.delayed(const Duration(milliseconds: 500));
-            final newState = await FlutterBluePlus.adapterState.first.timeout(
-              const Duration(seconds: 1),
-            );
-            if (newState == BluetoothAdapterState.on) {
-              debugPrint('Bluetooth turned on successfully');
-              return;
-            }
+    if (state == BluetoothAdapterState.on) {
+      return;
+    }
+
+    if (state == BluetoothAdapterState.off &&
+        defaultTargetPlatform == TargetPlatform.android) {
+      debugPrint('Bluetooth is off, requesting turn on...');
+      try {
+        await FlutterBluePlus.turnOn();
+        // Wait for Bluetooth to turn on
+        for (int i = 0; i < 5; i++) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          final newState = await FlutterBluePlus.adapterState.first.timeout(
+            const Duration(seconds: 1),
+          );
+          if (newState == BluetoothAdapterState.on) {
+            debugPrint('Bluetooth turned on successfully');
+            return;
           }
-        } catch (e) {
-          debugPrint('Error turning on Bluetooth: $e');
         }
-      }
-
-      if (attempt < 2) {
-        await Future.delayed(const Duration(milliseconds: 500));
+      } catch (e) {
+        debugPrint('Error turning on Bluetooth: $e');
       }
     }
 
-    throw Exception('Failed to ensure Bluetooth is on');
+    throw Exception('Bluetooth is not enabled');
   }
 
   Future<bool> _isDevicePaired(BluetoothDevice device) async {

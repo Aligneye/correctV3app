@@ -273,7 +273,7 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
           const SizedBox(width: 8),
           chip('Posture', _Filter.posture, icon: Icons.accessibility_new_rounded),
           const SizedBox(width: 8),
-          chip('Therapy', _Filter.therapy, icon: Icons.vibration_rounded),
+          chip('Therapy', _Filter.therapy, icon: Icons.graphic_eq),
         ],
       ),
     );
@@ -566,7 +566,7 @@ class _SessionTile extends StatelessWidget {
                 child: Icon(
                   isPosture
                       ? Icons.accessibility_new_rounded
-                      : Icons.vibration_rounded,
+                      : Icons.graphic_eq,
                   size: 22,
                   color: accent,
                 ),
@@ -592,6 +592,8 @@ class _SessionTile extends StatelessWidget {
                         if (session.isLive) const _LivePill(),
                         if (!session.tsSynced && !session.isLive)
                           const _UnsyncedTimePill(),
+                        if (!session.cloudSynced && !session.isLive)
+                          const _CloudPendingIcon(),
                       ],
                     ),
                     const SizedBox(height: 4),
@@ -802,6 +804,22 @@ class _UnsyncedTimePill extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _CloudPendingIcon extends StatelessWidget {
+  const _CloudPendingIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.only(left: 6),
+      child: Icon(
+        Icons.cloud_off_rounded,
+        size: 14,
+        color: Color(0xFF94A3B8),
       ),
     );
   }

@@ -198,6 +198,8 @@ class SessionRepository {
     final alerts = isPosture ? _asIntOrNull(row['wrong_count']) : null;
     final dbId = (row['remote_id'] ?? row['id'])?.toString();
     final tsSynced = row['ts_synced'] == true || row['ts_synced'] == 1;
+    final syncStatus = row['sync_status'];
+    final cloudSynced = syncStatus == 1;
 
     final postureEvents = isPosture
         ? _parsePostureEvents(row['posture_events'])
@@ -221,6 +223,7 @@ class SessionRepository {
       wrongDurSec: wrongDurSec,
       isLive: dbId != null && dbId == liveSessionId,
       tsSynced: tsSynced,
+      cloudSynced: cloudSynced,
       startTs: startTs,
       postureEvents: postureEvents,
       therapyPatterns: therapyPatterns,

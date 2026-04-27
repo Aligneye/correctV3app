@@ -233,6 +233,7 @@ class _HomeDashboardState extends State<HomeDashboard>
   String _nextTherapyPattern = 'Waiting for therapy';
   bool _hasShownStartupConnectSheet = false;
   bool _isFindingDevice = false;
+  bool _syncBannerDismissed = false;
   bool _isLoadingOfflineSessions = true;
   int _lastSyncTick = 0;
   List<SessionData> _offlineSessions = const <SessionData>[];
@@ -284,6 +285,7 @@ class _HomeDashboardState extends State<HomeDashboard>
       final nextPattern = reading.therapyNextPattern.trim();
       final reportedRemainingSec = reading.therapyRemainingSeconds;
       setState(() {
+        _syncBannerDismissed = false;
         _postureAngle = reading.angle;
         _isBadPosture = reading.isBadPosture;
         _postureStatus = reading.isBadPosture ? 'Bad posture' : 'Good posture';
@@ -1141,7 +1143,8 @@ class _HomeDashboardState extends State<HomeDashboard>
                           isLoading: _isLoadingOfflineSessions,
                           isSyncing: isSyncing,
                           isDeviceDisconnected:
-                              status == DeviceConnectionStatus.disconnected,
+                              status == DeviceConnectionStatus.disconnected &&
+                              !_syncBannerDismissed,
                           isDeviceConnecting:
                               status == DeviceConnectionStatus.connecting,
                           onViewAll: () => Navigator.of(context).push<void>(
@@ -1179,18 +1182,19 @@ class _HomeDashboardState extends State<HomeDashboard>
   Future<void> _handleSyncNow() async {
     final status = _deviceService.connectionStatus.value;
     if (status == DeviceConnectionStatus.connected) {
-      // Already connected — nudge a fresh sync by toggling reconnect path.
-      // Simplest robust way: reuse the existing connect flow, which is a
-      // no-op when already connected and otherwise does the right thing.
       return;
     }
     try {
       await _bluetoothManager.connect();
     } catch (e) {
+      // User denied or connection failed — stop auto-reconnect and hide banner.
+      await _bluetoothManager.setAutoReconnect(false);
       if (!mounted) return;
+      setState(() => _syncBannerDismissed = true);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Couldn\'t reach the pod: ${e.toString()}'),
+        const SnackBar(
+          content: Text('Bluetooth connection cancelled. '
+              'Tap the connect button when ready.'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -2156,7 +2160,7 @@ class _LiveSessionRow extends StatelessWidget {
                 child: Icon(
                   isPosture
                       ? Icons.accessibility_new_rounded
-                      : Icons.vibration_rounded,
+                      : Icons.graphic_eq,
                   size: 19,
                   color: accent,
                 ),
@@ -2304,6 +2308,15 @@ class _HomeSessionItem extends StatelessWidget {
                         const SizedBox(width: 6),
                         const _HomeLivePill(),
                       ],
+                      if (!session.cloudSynced && !session.isLive)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 6),
+                          child: Icon(
+                            Icons.cloud_off_rounded,
+                            size: 13,
+                            color: Color(0xFF94A3B8),
+                          ),
+                        ),
                       const SizedBox(width: 8),
                       Text(
                         session.time,

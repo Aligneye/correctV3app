@@ -51,6 +51,7 @@ class SessionData {
   final int? wrongDurSec;
   final bool isLive;
   final bool tsSynced;
+  final bool cloudSynced;
   final DateTime? startTs;
   final List<PostureEvent>? postureEvents;
   final List<int>? therapyPatterns;
@@ -70,6 +71,7 @@ class SessionData {
     this.wrongDurSec,
     this.isLive = false,
     this.tsSynced = true,
+    this.cloudSynced = true,
     this.startTs,
     this.postureEvents,
     this.therapyPatterns,
@@ -1713,7 +1715,7 @@ class SessionDetailScreen extends StatelessWidget {
                     child: Icon(
                       isPosture
                           ? Icons.accessibility_new_rounded
-                          : Icons.vibration_rounded,
+                          : Icons.graphic_eq,
                       size: 30,
                       color: Colors.white,
                     ),

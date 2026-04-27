@@ -66,7 +66,6 @@ class SessionSyncService {
       if (localId == null) continue;
 
       final remoteId = row['remote_id'] as String?;
-      final syncStatus = row['sync_status'] as int? ?? 0;
 
       final payload = <String, dynamic>{
         'user_id': row['user_id'],
@@ -82,8 +81,8 @@ class SessionSyncService {
       };
 
       try {
-        if (remoteId == null && syncStatus == 0) {
-          // New row — insert into Supabase and store returned ID.
+        if (remoteId == null) {
+          // Never been to Supabase — insert.
           final inserted = await _client
               .from('sessions')
               .insert(payload)
@@ -94,16 +93,15 @@ class SessionSyncService {
             await db.markSynced(localId, newRemoteId);
             debugPrint('SessionSyncService: pushed new → remote=$newRemoteId');
           }
-        } else if (remoteId != null && syncStatus == 2) {
-          // Dirty row — update in Supabase.
+        } else {
+          // Already in Supabase — update with latest local data.
           await _client.from('sessions').update(payload).eq('id', remoteId);
           await db.markSynced(localId, remoteId);
           debugPrint('SessionSyncService: pushed update → remote=$remoteId');
         }
       } catch (e) {
-        // Network error or Supabase rejection — skip this row, retry next cycle.
         debugPrint('SessionSyncService: failed to push id=$localId: $e');
-        break;
+        continue;
       }
     }
   }
