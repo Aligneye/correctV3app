@@ -167,14 +167,24 @@ class SessionRepository {
     if (durationSec < 0) return null;
 
     final startTs = _parseTs(row['start_ts'])?.toLocal();
+    if (startTs == null && durationSec == 0) return null;
+    final wrongDurSec = isPosture ? _asInt(row['wrong_dur_sec']) : null;
 
     final score = isPosture
-        ? _scoreFrom(durationSec, _asInt(row['wrong_dur_sec']))
+        ? _scoreFrom(durationSec, wrongDurSec ?? 0)
         : null;
 
     final pattern = isPosture ? null : _asIntOrNull(row['therapy_pattern']);
     final alerts = isPosture ? _asIntOrNull(row['wrong_count']) : null;
     final dbId = row['id']?.toString();
+    final tsSynced = row['ts_synced'] == true;
+
+    final postureEvents = isPosture
+        ? _parsePostureEvents(row['posture_events'])
+        : null;
+    final therapyPatterns = isPosture
+        ? null
+        : _parseTherapyPatterns(row['therapy_patterns']);
 
     return SessionData(
       id: index,
@@ -184,11 +194,42 @@ class SessionRepository {
       time: _formatRelativeTime(startTs),
       date: _formatShortDate(startTs),
       duration: _formatDuration(durationSec),
+      durationSec: durationSec,
       alerts: alerts,
       score: score,
       pattern: pattern,
+      wrongDurSec: wrongDurSec,
       isLive: dbId != null && dbId == liveSessionId,
+      tsSynced: tsSynced,
+      startTs: startTs,
+      postureEvents: postureEvents,
+      therapyPatterns: therapyPatterns,
     );
+  }
+
+  List<PostureEvent>? _parsePostureEvents(dynamic raw) {
+    if (raw is! List) return null;
+    final out = <PostureEvent>[];
+    for (final entry in raw) {
+      if (entry is Map) {
+        out.add(PostureEvent.fromJson(entry.cast<String, dynamic>()));
+      }
+    }
+    return out.isEmpty ? null : out;
+  }
+
+  List<int>? _parseTherapyPatterns(dynamic raw) {
+    if (raw is! List) return null;
+    final out = <int>[];
+    for (final entry in raw) {
+      if (entry is num) {
+        out.add(entry.toInt());
+      } else {
+        final parsed = int.tryParse(entry?.toString() ?? '');
+        if (parsed != null) out.add(parsed);
+      }
+    }
+    return out.isEmpty ? null : out;
   }
 
   /// Mirrors the canonical formula from the BLE sync layer so numbers shown

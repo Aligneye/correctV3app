@@ -7,6 +7,35 @@ import 'package:correctv1/theme/app_theme.dart';
 
 enum SessionType { posture, therapy }
 
+/// One slouch -> correction pair from the firmware's session_log event file.
+/// `slouchSec` is the offset from session start where bad posture began;
+/// `correctionSec` is when it was corrected. The firmware sentinel `0xFFFF`
+/// (== [PostureEvent.uncorrected]) means the user was still slouching when
+/// the session ended.
+class PostureEvent {
+  final int slouchSec;
+  final int correctionSec;
+
+  const PostureEvent({required this.slouchSec, required this.correctionSec});
+
+  static const int uncorrected = 0xFFFF;
+
+  bool get wasCorrected => correctionSec != uncorrected;
+
+  int get durationSec {
+    if (!wasCorrected) return 0;
+    final d = correctionSec - slouchSec;
+    return d > 0 ? d : 0;
+  }
+
+  Map<String, dynamic> toJson() => {'s': slouchSec, 'c': correctionSec};
+
+  factory PostureEvent.fromJson(Map<String, dynamic> json) => PostureEvent(
+    slouchSec: (json['s'] as num?)?.toInt() ?? 0,
+    correctionSec: (json['c'] as num?)?.toInt() ?? uncorrected,
+  );
+}
+
 class SessionData {
   final int id;
   final String? dbId;
@@ -15,10 +44,16 @@ class SessionData {
   final String time;
   final String date;
   final String duration;
+  final int durationSec;
   final int? alerts;
   final int? score;
   final int? pattern;
+  final int? wrongDurSec;
   final bool isLive;
+  final bool tsSynced;
+  final DateTime? startTs;
+  final List<PostureEvent>? postureEvents;
+  final List<int>? therapyPatterns;
 
   const SessionData({
     required this.id,
@@ -28,10 +63,16 @@ class SessionData {
     required this.time,
     required this.date,
     required this.duration,
+    required this.durationSec,
     this.alerts,
     this.score,
     this.pattern,
+    this.wrongDurSec,
     this.isLive = false,
+    this.tsSynced = true,
+    this.startTs,
+    this.postureEvents,
+    this.therapyPatterns,
   });
 }
 
@@ -71,11 +112,9 @@ const List<int> _kHeatmap = [
 
 const _kBlue = AppTheme.brandPrimary; // #2563EB
 const _kBlueLight = Color(0xFFEFF6FF);
-const _kBluePale = Color(0xFFBFDBFE);
 const _kGreen = AppTheme.successText; // #16A34A
 const _kGreenLight = AppTheme.successBg; // #F0FDF4
 const _kRed = AppTheme.destructive; // #EF4444
-const _kRedLight = Color(0xFFFCA5A5);
 const _kBg = Color(0xFFF7F8FC);
 const _kCard = Colors.white;
 const _kBorder = Color(0xFFEEEEF0);
@@ -131,7 +170,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     _lastSyncTick = _deviceManager.syncCompletedTick.value;
     _deviceManager.syncCompletedTick.addListener(_onSyncFinished);
     _deviceManager.isSyncing.addListener(_onSyncingChanged);
-    _deviceManager.activeSessionId.addListener(_onSyncFinished);
+    _deviceManager.activeSessionId.addListener(_onActiveSessionChanged);
     _reloadAll();
   }
 
@@ -139,7 +178,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   void dispose() {
     _deviceManager.syncCompletedTick.removeListener(_onSyncFinished);
     _deviceManager.isSyncing.removeListener(_onSyncingChanged);
-    _deviceManager.activeSessionId.removeListener(_onSyncFinished);
+    _deviceManager.activeSessionId.removeListener(_onActiveSessionChanged);
     super.dispose();
   }
 
@@ -147,10 +186,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final tick = _deviceManager.syncCompletedTick.value;
     if (tick == _lastSyncTick) return;
     _lastSyncTick = tick;
-    // Supabase row inserts may settle a moment after the ACK, so nudge the
-    // reload slightly to avoid an empty-looking fetch right on the heels
-    // of the final insert.
     Future<void>.delayed(const Duration(milliseconds: 400), _reloadAll);
+  }
+
+  void _onActiveSessionChanged() {
+    if (!mounted) return;
+    _reloadAll();
   }
 
   void _onSyncingChanged() {
@@ -1392,34 +1433,52 @@ class _SessionItem extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.fromLTRB(13, 13, 10, 13),
-        decoration: _cardDecoration(radius: 14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFEEEEF0), width: 0.5),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x14000000),
+              blurRadius: 18,
+              offset: Offset(0, 8),
+            ),
+            BoxShadow(
+              color: Color(0x08000000),
+              blurRadius: 4,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Icon badge
             Container(
               width: 42,
               height: 42,
               decoration: BoxDecoration(
-                color: isPosture ? _kBlueLight : _kGreenLight,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isPosture
+                      ? const [Color(0xFFC084FC), Color(0xFFEC4899)]
+                      : const [Color(0xFF60A5FA), Color(0xFF06B6D4)],
+                ),
                 borderRadius: BorderRadius.circular(13),
               ),
               child: Icon(
                 isPosture
                     ? Icons.accessibility_new_rounded
-                    : Icons.vibration_rounded,
-                color: isPosture ? _kBlue : _kGreen,
+                    : Icons.graphic_eq,
+                color: Colors.white,
                 size: 22,
               ),
             ),
             const SizedBox(width: 12),
-
-            // Content
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Name + time row
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
@@ -1441,13 +1500,14 @@ class _SessionItem extends StatelessWidget {
                       const SizedBox(width: 8),
                       Text(
                         session.time,
-                        style: const TextStyle(fontSize: 10, color: _kTextHint),
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: _kTextHint,
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 7),
-
-                  // Mini stats row
                   Row(
                     children: [
                       _MiniStat(value: session.duration, label: 'Duration'),
@@ -1460,7 +1520,10 @@ class _SessionItem extends StatelessWidget {
                       ],
                       if (session.alerts != null) ...[
                         const SizedBox(width: 14),
-                        _MiniStat(value: '${session.alerts}×', label: 'Alerts'),
+                        _MiniStat(
+                          value: '${session.alerts}\u00d7',
+                          label: 'Alerts',
+                        ),
                       ],
                       if (session.pattern != null) ...[
                         const SizedBox(width: 14),
@@ -1471,8 +1534,6 @@ class _SessionItem extends StatelessWidget {
                       ],
                     ],
                   ),
-
-                  // Progress bar (posture only)
                   if (session.score != null) ...[
                     const SizedBox(height: 8),
                     ClipRRect(
@@ -1480,7 +1541,8 @@ class _SessionItem extends StatelessWidget {
                       child: LinearProgressIndicator(
                         value: session.score! / 100,
                         backgroundColor: const Color(0xFFEEEEF8),
-                        valueColor: const AlwaysStoppedAnimation<Color>(_kBlue),
+                        valueColor:
+                            const AlwaysStoppedAnimation<Color>(_kBlue),
                         minHeight: 3.5,
                       ),
                     ),
@@ -1488,7 +1550,6 @@ class _SessionItem extends StatelessWidget {
                 ],
               ),
             ),
-
             const SizedBox(width: 4),
             const Icon(
               Icons.chevron_right_rounded,
@@ -1554,6 +1615,7 @@ class SessionDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
+    final accent = isPosture ? _kBlue : _kGreen;
     return Scaffold(
       backgroundColor: _kBg,
       appBar: AppBar(
@@ -1569,12 +1631,12 @@ class SessionDetailScreen extends StatelessWidget {
             ],
           ),
         ),
-        title: const Text(
-          'Analytics',
-          style: TextStyle(
+        title: Text(
+          isPosture ? 'Posture session' : 'Therapy session',
+          style: const TextStyle(
             fontSize: 14,
             color: _kBlue,
-            fontWeight: FontWeight.w500,
+            fontWeight: FontWeight.w600,
           ),
         ),
         bottom: PreferredSize(
@@ -1590,35 +1652,82 @@ class SessionDetailScreen extends StatelessWidget {
             // Hero card
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 28),
+              padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 22),
               decoration: BoxDecoration(
-                color: isPosture ? _kBlue : _kGreen,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isPosture
+                      ? const [Color(0xFF2F7BFF), Color(0xFF08B4CB)]
+                      : const [Color(0xFF22C55E), Color(0xFF0EA5E9)],
+                ),
                 borderRadius: BorderRadius.circular(18),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x2A0EA5E9),
+                    blurRadius: 18,
+                    offset: Offset(0, 10),
+                  ),
+                ],
               ),
-              child: Column(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Text(
-                    isPosture ? '${session.score}%' : '#${session.pattern}',
-                    style: const TextStyle(
-                      fontSize: 60,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                      height: 1,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isPosture
+                              ? '${session.score ?? 0}%'
+                              : '#${session.pattern ?? 0}',
+                          style: const TextStyle(
+                            fontSize: 56,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                            height: 1,
+                            letterSpacing: -1.5,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          isPosture
+                              ? 'Good posture score'
+                              : 'Last vibration pattern',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            color: Colors.white.withValues(alpha: 0.85),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    isPosture ? 'Good posture score' : 'Vibration pattern',
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      color: Colors.white.withValues(alpha: 0.8),
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(
+                      isPosture
+                          ? Icons.accessibility_new_rounded
+                          : Icons.vibration_rounded,
+                      size: 30,
+                      color: Colors.white,
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 10),
 
+            if (!session.tsSynced) ...[
+              const SizedBox(height: 12),
+              _UnsyncedBanner(),
+            ],
+
+            const SizedBox(height: 14),
             _label('Session details'),
             GridView.count(
               crossAxisCount: 2,
@@ -1629,32 +1738,40 @@ class SessionDetailScreen extends StatelessWidget {
               childAspectRatio: 2.4,
               children: [
                 _DetailStat(value: session.duration, label: 'Duration'),
-                _DetailStat(value: session.date, label: 'Date'),
+                _DetailStat(
+                  value: _formatDateLong(session.startTs) ?? session.date,
+                  label: 'Date',
+                ),
                 if (isPosture) ...[
                   _DetailStat(
-                    value: '${session.alerts}×',
+                    value: '${session.alerts ?? 0}×',
                     label: 'Vibration alerts',
                   ),
                   _DetailStat(
-                    value: '${100 - session.score!}%',
-                    label: 'Needs work',
+                    value: _formatBadDuration(session),
+                    label: 'Bad posture',
                   ),
                 ] else ...[
-                  const _DetailStat(value: 'Full', label: 'Completion'),
-                  const _DetailStat(value: '20 min', label: 'Pattern time'),
+                  _DetailStat(
+                    value: '${(session.therapyPatterns?.length ?? 0)}',
+                    label: 'Patterns played',
+                  ),
+                  _DetailStat(
+                    value: _formatStartTime(session.startTs) ?? '—',
+                    label: 'Started',
+                  ),
                 ],
               ],
             ),
-            const SizedBox(height: 4),
 
             if (isPosture) ...[
               _label('Session timeline'),
-              _timelineCard(),
-              _label('vs your average'),
-              _compareCard(session.score!),
+              _PostureTimelineCard(session: session),
+              _label('Slouch events'),
+              _PostureEventsList(session: session),
             ] else ...[
-              _label('Pattern info'),
-              _patternInfoCard(session.pattern!),
+              _label('Patterns played'),
+              _TherapyPatternsCard(session: session, accent: accent),
             ],
           ],
         ),
@@ -1675,82 +1792,473 @@ class SessionDetailScreen extends StatelessWidget {
     ),
   );
 
-  Widget _timelineCard() => Container(
-    padding: const EdgeInsets.all(16),
-    margin: const EdgeInsets.only(bottom: 4),
-    decoration: _cardDecoration(),
-    child: Column(
-      children: [
-        _TlItem(
-          color: _kBlue,
-          title: 'Session started',
-          sub: '0:00 — device connected',
-          isLast: false,
-        ),
-        _TlItem(
-          color: _kRedLight,
-          title: 'Alert — slouch detected',
-          sub: '4:12 — vibration fired',
-          isLast: false,
-        ),
-        _TlItem(
-          color: _kGreen,
-          title: 'Posture corrected',
-          sub: '4:25 — good posture resumed',
-          isLast: false,
-        ),
-        _TlItem(
-          color: _kRedLight,
-          title: 'Alert — forward lean',
-          sub: '11:40 — vibration fired',
-          isLast: false,
-        ),
-        _TlItem(
-          color: _kBlue,
-          title: 'Session ended',
-          sub: '${session.duration} total',
-          isLast: true,
-        ),
-      ],
-    ),
-  );
+  static String _formatBadDuration(SessionData session) {
+    final wrong = session.wrongDurSec ?? 0;
+    if (wrong <= 0) return '0s';
+    if (wrong < 60) return '${wrong}s';
+    final m = wrong ~/ 60;
+    final s = wrong % 60;
+    return s == 0 ? '${m}m' : '${m}m ${s}s';
+  }
 
-  Widget _compareCard(int score) => Container(
-    padding: const EdgeInsets.all(16),
-    margin: const EdgeInsets.only(bottom: 4),
-    decoration: _cardDecoration(),
-    child: Column(
-      children: [
-        _CompareRow(
-          label: 'This session',
-          value: '$score%',
-          fill: score / 100,
-          color: _kBlue,
-        ),
-        const SizedBox(height: 12),
-        _CompareRow(
-          label: 'Your average',
-          value: '80%',
-          fill: 0.80,
-          color: _kBluePale,
-        ),
-      ],
-    ),
-  );
+  static String? _formatDateLong(DateTime? ts) {
+    if (ts == null) return null;
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${months[ts.month - 1]} ${ts.day}';
+  }
 
-  Widget _patternInfoCard(int pattern) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-    margin: const EdgeInsets.only(bottom: 4),
-    decoration: _cardDecoration(),
-    child: Column(
-      children: [
-        _InfoRow(label: 'Pattern #', value: '$pattern'),
-        _InfoRow(label: 'Duration', value: session.duration),
-        _InfoRow(label: 'Intensity', value: 'Medium'),
-        _InfoRow(label: 'Status', value: 'Completed', valueColor: _kGreen),
-      ],
-    ),
+  static String? _formatStartTime(DateTime? ts) {
+    if (ts == null) return null;
+    final hour = ts.hour == 0 ? 12 : (ts.hour > 12 ? ts.hour - 12 : ts.hour);
+    final minute = ts.minute.toString().padLeft(2, '0');
+    final ampm = ts.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minute $ampm';
+  }
+}
+
+// ─── Unsynced time warning banner ────────────────────────────────────────────
+
+class _UnsyncedBanner extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E6),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE2A8)),
+      ),
+      child: Row(
+        children: const [
+          Icon(Icons.history_toggle_off, size: 18, color: Color(0xFFB45309)),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Recorded while the device clock was unsynced. The start time '
+              'was estimated.',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: Color(0xFFB45309),
+                height: 1.3,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Posture timeline (real event data) ──────────────────────────────────────
+
+class _PostureTimelineCard extends StatelessWidget {
+  final SessionData session;
+  const _PostureTimelineCard({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final events = session.postureEvents ?? const <PostureEvent>[];
+    final durationSec = session.durationSec.clamp(1, 1 << 30).toInt();
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+      decoration: _cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Stripe visualization
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(
+              height: 18,
+              child: CustomPaint(
+                size: Size.infinite,
+                painter: _PostureStripePainter(
+                  events: events,
+                  totalSec: durationSec,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          // Time axis
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                '0:00',
+                style: TextStyle(fontSize: 10.5, color: _kTextHint),
+              ),
+              Text(
+                _formatMinSec(durationSec),
+                style: const TextStyle(fontSize: 10.5, color: _kTextHint),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              const _LegendDot(color: _kGreen),
+              const SizedBox(width: 6),
+              Text(
+                'Good ${_formatMinSec((durationSec - (session.wrongDurSec ?? 0)).clamp(0, durationSec).toInt())}',
+                style: const TextStyle(fontSize: 11.5, color: _kTextMuted),
+              ),
+              const SizedBox(width: 16),
+              const _LegendDot(color: _kRed),
+              const SizedBox(width: 6),
+              Text(
+                'Bad ${_formatMinSec(session.wrongDurSec ?? 0)}',
+                style: const TextStyle(fontSize: 11.5, color: _kTextMuted),
+              ),
+            ],
+          ),
+          if (events.isEmpty) ...[
+            const SizedBox(height: 14),
+            const Text(
+              'No slouch events recorded — your posture stayed within range '
+              'the entire session.',
+              style: TextStyle(
+                fontSize: 12,
+                color: _kTextMuted,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PostureStripePainter extends CustomPainter {
+  _PostureStripePainter({required this.events, required this.totalSec});
+
+  final List<PostureEvent> events;
+  final int totalSec;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final goodPaint = Paint()..color = const Color(0xFFD1FAE5);
+    final badPaint = Paint()..color = _kRed;
+    canvas.drawRect(Offset.zero & size, goodPaint);
+
+    if (totalSec <= 0) return;
+    for (final e in events) {
+      final start = e.slouchSec.clamp(0, totalSec).toDouble();
+      final end = e.wasCorrected
+          ? e.correctionSec.clamp(0, totalSec).toDouble()
+          : totalSec.toDouble();
+      if (end <= start) continue;
+      final x = size.width * (start / totalSec);
+      final w = size.width * ((end - start) / totalSec);
+      canvas.drawRect(Rect.fromLTWH(x, 0, w, size.height), badPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PostureStripePainter old) =>
+      old.events != events || old.totalSec != totalSec;
+}
+
+class _LegendDot extends StatelessWidget {
+  final Color color;
+  const _LegendDot({required this.color});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 9,
+    height: 9,
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
   );
+}
+
+class _PostureEventsList extends StatelessWidget {
+  final SessionData session;
+  const _PostureEventsList({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final events = session.postureEvents ?? const <PostureEvent>[];
+
+    if (events.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+        decoration: _cardDecoration(),
+        child: Row(
+          children: const [
+            Icon(Icons.shield_rounded, size: 22, color: _kGreen),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Zero slouch alerts. Picture-perfect posture.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: _kText,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      decoration: _cardDecoration(),
+      child: Column(
+        children: [
+          for (var i = 0; i < events.length; i++)
+            _PostureEventRow(
+              index: i + 1,
+              event: events[i],
+              isLast: i == events.length - 1,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PostureEventRow extends StatelessWidget {
+  final int index;
+  final PostureEvent event;
+  final bool isLast;
+  const _PostureEventRow({
+    required this.index,
+    required this.event,
+    required this.isLast,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final corrected = event.wasCorrected;
+    final dur = event.durationSec;
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 11),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: isLast ? Colors.transparent : _kBorder,
+            width: 0.5,
+          ),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: corrected
+                  ? _kRed.withValues(alpha: 0.10)
+                  : _kRed.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Text(
+              '$index',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: _kRed.withValues(alpha: 0.95),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  corrected
+                      ? 'Slouched at ${_formatMinSec(event.slouchSec)} → corrected at ${_formatMinSec(event.correctionSec)}'
+                      : 'Slouched at ${_formatMinSec(event.slouchSec)} (still bad at end)',
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: _kText,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  corrected
+                      ? 'Bad posture for ${_formatMinSec(dur)}'
+                      : 'Open-ended slouch',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: _kTextMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            decoration: BoxDecoration(
+              color: corrected ? _kGreenLight : const Color(0xFFFFE4E6),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              corrected ? 'fixed' : 'open',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: corrected ? _kGreen : _kRed,
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Therapy patterns card ───────────────────────────────────────────────────
+
+class _TherapyPatternsCard extends StatelessWidget {
+  final SessionData session;
+  final Color accent;
+  const _TherapyPatternsCard({required this.session, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    final patterns = session.therapyPatterns ?? const <int>[];
+
+    if (patterns.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+        decoration: _cardDecoration(),
+        child: Row(
+          children: [
+            Icon(Icons.vibration_rounded, size: 22, color: accent),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                session.pattern != null
+                    ? 'Pattern #${session.pattern} ran for ${session.duration}.'
+                    : 'No pattern data captured for this session.',
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: _kText,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+      decoration: _cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${patterns.length} pattern${patterns.length == 1 ? '' : 's'} '
+            'in this ${session.duration} session',
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: _kTextMuted,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (var i = 0; i < patterns.length; i++)
+                _TherapyPatternChip(
+                  step: i + 1,
+                  patternIndex: patterns[i],
+                  accent: accent,
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TherapyPatternChip extends StatelessWidget {
+  final int step;
+  final int patternIndex;
+  final Color accent;
+  const _TherapyPatternChip({
+    required this.step,
+    required this.patternIndex,
+    required this.accent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withValues(alpha: 0.20)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              '$step',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: accent,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '#$patternIndex',
+            style: const TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+              color: _kText,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatMinSec(int seconds) {
+  if (seconds < 0) seconds = 0;
+  final m = seconds ~/ 60;
+  final s = seconds % 60;
+  return '$m:${s.toString().padLeft(2, '0')}';
 }
 
 // ─── Detail Stat ──────────────────────────────────────────────────────────────
@@ -1783,141 +2291,3 @@ class _DetailStat extends StatelessWidget {
   );
 }
 
-// ─── Timeline Item ────────────────────────────────────────────────────────────
-
-class _TlItem extends StatelessWidget {
-  final Color color;
-  final String title, sub;
-  final bool isLast;
-  const _TlItem({
-    required this.color,
-    required this.title,
-    required this.sub,
-    required this.isLast,
-  });
-
-  @override
-  Widget build(BuildContext context) => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      // Dot + line
-      SizedBox(
-        width: 18,
-        child: Column(
-          children: [
-            Container(
-              width: 10,
-              height: 10,
-              margin: const EdgeInsets.only(top: 3),
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-            ),
-            if (!isLast)
-              Container(width: 1.5, height: 32, color: const Color(0xFFE8E8F0)),
-          ],
-        ),
-      ),
-      const SizedBox(width: 8),
-      Expanded(
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: _kText,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                sub,
-                style: const TextStyle(fontSize: 11, color: _kTextHint),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ],
-  );
-}
-
-// ─── Compare Row ─────────────────────────────────────────────────────────────
-
-class _CompareRow extends StatelessWidget {
-  final String label, value;
-  final double fill;
-  final Color color;
-  const _CompareRow({
-    required this.label,
-    required this.value,
-    required this.fill,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(fontSize: 12.5, color: _kTextMuted),
-          ),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 12.5,
-              fontWeight: FontWeight.w600,
-              color: _kText,
-            ),
-          ),
-        ],
-      ),
-      const SizedBox(height: 6),
-      ClipRRect(
-        borderRadius: BorderRadius.circular(4),
-        child: LinearProgressIndicator(
-          value: fill,
-          backgroundColor: const Color(0xFFF3F4F6),
-          valueColor: AlwaysStoppedAnimation<Color>(color),
-          minHeight: 7,
-        ),
-      ),
-    ],
-  );
-}
-
-// ─── Info Row ────────────────────────────────────────────────────────────────
-
-class _InfoRow extends StatelessWidget {
-  final String label, value;
-  final Color valueColor;
-  const _InfoRow({
-    required this.label,
-    required this.value,
-    this.valueColor = _kText,
-  });
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: const TextStyle(fontSize: 13, color: _kTextMuted)),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: valueColor,
-          ),
-        ),
-      ],
-    ),
-  );
-}

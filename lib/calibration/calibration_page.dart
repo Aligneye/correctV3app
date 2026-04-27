@@ -405,19 +405,30 @@ class _IntroScreen extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             height: 56,
-            child: FilledButton(
-              onPressed: onStart,
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF008090),
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFA855F7), Color(0xFFEC4899)],
                 ),
+                borderRadius: BorderRadius.circular(16),
               ),
-              child: const Text(
-                'Start Calibration',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(16),
+                child: InkWell(
+                  onTap: onStart,
+                  borderRadius: BorderRadius.circular(16),
+                  child: const Center(
+                    child: Text(
+                      'Start Calibration',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),

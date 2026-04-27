@@ -3,14 +3,16 @@ import 'dart:math' as math;
 
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
 import 'package:correctv1/bluetooth/bluetooth_service_manager.dart';
+import 'package:correctv1/bluetooth/device_connect_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:correctv1/home/meditation_page.dart';
 import 'package:correctv1/discover/discover_page.dart';
 import 'package:correctv1/home/therapy_page.dart';
 import 'package:correctv1/home/training_page.dart';
 import 'package:correctv1/analytics/analytics_screen.dart';
+import 'package:correctv1/sessions/sessions_history_page.dart';
 import 'package:correctv1/settings/settings_page.dart';
 import 'package:correctv1/components/nav_bar.dart';
 import 'package:correctv1/calibration/calibration_page.dart';
@@ -312,7 +314,7 @@ class _HomeDashboardState extends State<HomeDashboard>
     _lastSyncTick = _deviceManager.syncCompletedTick.value;
     _deviceManager.syncCompletedTick.addListener(_handleSessionSyncFinished);
     _deviceManager.isSyncing.addListener(_handleSyncingChanged);
-    _deviceManager.activeSessionId.addListener(_handleSessionSyncFinished);
+    _deviceManager.activeSessionId.addListener(_handleActiveSessionChanged);
     unawaited(_loadOfflineSessions());
   }
 
@@ -321,7 +323,7 @@ class _HomeDashboardState extends State<HomeDashboard>
     _readingSubscription?.cancel();
     _deviceManager.syncCompletedTick.removeListener(_handleSessionSyncFinished);
     _deviceManager.isSyncing.removeListener(_handleSyncingChanged);
-    _deviceManager.activeSessionId.removeListener(_handleSessionSyncFinished);
+    _deviceManager.activeSessionId.removeListener(_handleActiveSessionChanged);
     _therapyCountdownTimer?.cancel();
     // Don't dispose the device service here - it's managed by BluetoothServiceManager
     // unawaited(_deviceService.dispose());
@@ -332,6 +334,11 @@ class _HomeDashboardState extends State<HomeDashboard>
   void _handleSyncingChanged() {
     if (!mounted) return;
     setState(() {});
+  }
+
+  void _handleActiveSessionChanged() {
+    if (!mounted) return;
+    unawaited(_loadOfflineSessions());
   }
 
   void _handleSessionSyncFinished() {
@@ -350,14 +357,15 @@ class _HomeDashboardState extends State<HomeDashboard>
         liveSessionId: _deviceManager.activeSessionId.value,
       );
       if (!mounted) return;
+      debugPrint('HomeDashboard: loaded ${sessions.length} sessions');
       setState(() {
-        _offlineSessions = sessions.take(3).toList(growable: false);
+        _offlineSessions = sessions.take(5).toList(growable: false);
         _isLoadingOfflineSessions = false;
       });
-    } catch (_) {
+    } catch (e) {
+      debugPrint('HomeDashboard: _loadOfflineSessions error: $e');
       if (!mounted) return;
       setState(() {
-        _offlineSessions = const <SessionData>[];
         _isLoadingOfflineSessions = false;
       });
     }
@@ -404,130 +412,37 @@ class _HomeDashboardState extends State<HomeDashboard>
   }
 
   Future<void> _handleDeviceStatusTap() async {
-    final currentStatus = _deviceService.connectionStatus.value;
-    if (currentStatus == DeviceConnectionStatus.connecting) {
+    final status = _deviceService.connectionStatus.value;
+    if (status == DeviceConnectionStatus.connecting) return;
+
+    if (status == DeviceConnectionStatus.connected) {
+      await _showConnectedSheet();
       return;
     }
 
-    if (currentStatus == DeviceConnectionStatus.connected) {
-      final shouldDisconnect = await _confirmDisconnect();
-      if (shouldDisconnect == true) {
-        // User initiated disconnect - will unpair device and prevent auto-reconnect
-        await _deviceService.disconnect(userInitiated: true);
-      }
-      return;
-    }
-
-    try {
-      // Use the manager's connect method to ensure proper connection handling
-      await _bluetoothManager.connect();
-    } catch (e) {
-      if (!mounted) return;
-
-      final errorMessage = e.toString();
-      String dialogTitle = 'Connection Failed';
-      String dialogContent = 'Could not connect to device.';
-
-      if (errorMessage.contains('permission') ||
-          errorMessage.contains('Permission')) {
-        dialogTitle = 'Permission Required';
-        dialogContent =
-            'Bluetooth scanning requires Location permission.\n\n'
-            'Please grant Location permission:\n\n'
-            '1. Tap "Open Settings" below\n'
-            '2. Go to Permissions → Location\n'
-            '3. Select "Allow" or "While using the app"\n'
-            '4. Return to the app and try again';
-      } else if (errorMessage.contains('not found')) {
-        dialogContent =
-            'Device "aligneye pod" not found.\n\n'
-            'Please ensure:\n\n'
-            '1. Device is powered on\n'
-            '2. Device is within range\n'
-            '3. Device is advertising\n\n'
-            'If you can see the device in Bluetooth settings, try pairing it manually first.';
-      }
-
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text(dialogTitle),
-            content: Text(dialogContent),
-            actions: [
-              if (errorMessage.contains('permission') ||
-                  errorMessage.contains('Permission'))
-                TextButton(
-                  onPressed: () async {
-                    Navigator.of(context).pop();
-                    // Open app settings
-                    await openAppSettings();
-                  },
-                  child: const Text('Open Settings'),
-                ),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('OK'),
-              ),
-            ],
-          ),
-        );
-      }
-      return;
-    }
-
-    // Check if connection failed after a delay
-    await Future.delayed(const Duration(seconds: 3));
     if (!mounted) return;
-
-    if (_deviceService.connectionStatus.value ==
-        DeviceConnectionStatus.disconnected) {
-      // Connection failed for other reasons
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Connection Failed'),
-            content: const Text(
-              'Could not connect to device. Please ensure:\n\n'
-              '1. Device "aligneye pod" is powered on\n'
-              '2. Device is within range\n'
-              '3. Device is not connected to another device\n\n'
-              'If you can see the device in Bluetooth settings, try pairing it manually first.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('OK'),
-              ),
-            ],
-          ),
-        );
-      }
-    }
+    await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => const DeviceConnectPage()));
   }
 
-  Future<bool?> _confirmDisconnect() {
-    return showDialog<bool>(
+  Future<void> _showConnectedSheet() async {
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Disconnect device?'),
-          content: const Text(
-            'Disconnecting will stop real-time posture updates.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Disconnect'),
-            ),
-          ],
-        );
-      },
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => _ConnectedDeviceSheet(
+        batteryLevel: _batteryLevel,
+        onDisconnect: () async {
+          Navigator.of(ctx).pop();
+          await _deviceService.disconnect(userInitiated: true);
+          if (!mounted) return;
+          await Navigator.of(context).push<bool>(
+            MaterialPageRoute(builder: (_) => const DeviceConnectPage()),
+          );
+        },
+        onCancel: () => Navigator.of(ctx).pop(),
+      ),
     );
   }
 
@@ -818,7 +733,9 @@ class _HomeDashboardState extends State<HomeDashboard>
                           child: Container(
                             padding: const EdgeInsets.all(6),
                             decoration: BoxDecoration(
-                              color: scheme.onSurfaceVariant.withValues(alpha: 0.1),
+                              color: scheme.onSurfaceVariant.withValues(
+                                alpha: 0.1,
+                              ),
                               shape: BoxShape.circle,
                             ),
                             child: Icon(
@@ -945,7 +862,43 @@ class _HomeDashboardState extends State<HomeDashboard>
               _StaggeredFadeSlide(
                 controller: _controller,
                 delayMs: 0,
+                child: ValueListenableBuilder<DeviceConnectionStatus>(
+                  valueListenable: _deviceService.connectionStatus,
+                  builder: (context, connectionStatus, child) {
+                    return ValueListenableBuilder<bool>(
+                      valueListenable: _deviceService.isAutoConnectionAttempt,
+                      builder: (context, isAutoConnectionAttempt, child) {
+                        return ValueListenableBuilder<bool>(
+                          valueListenable: _deviceManager.isSyncing,
+                          builder: (context, isSyncing, child) {
+                            return ValueListenableBuilder<String?>(
+                              valueListenable: _deviceManager.activeSessionId,
+                              builder: (context, activeSessionId, child) {
+                                return _TopHeaderBar(
+                                  status: connectionStatus,
+                                  isAutoConnectionAttempt:
+                                      isAutoConnectionAttempt,
+                                  isFindingDevice: _isFindingDevice,
+                                  isSyncing: isSyncing,
+                                  isLive: activeSessionId != null,
+                                  batteryLevel: _batteryLevel,
+                                  onTap: _handleDeviceStatusTap,
+                                );
+                              },
+                            );
+                          },
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 24),
+              _StaggeredFadeSlide(
+                controller: _controller,
+                delayMs: 100,
                 child: const _StatsSummaryCard(
+                  streakDays: 12,
                   items: [
                     _StatItemData(
                       value: '82',
@@ -953,7 +906,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                       label: 'Good posture',
                       trendText: '6% from last week',
                       icon: Icons.accessibility_new_rounded,
-                      gradient: AppTheme.goodPostureGradient,
+                      gradient: AppTheme.trainingGradient,
                       positiveTrend: true,
                     ),
                     _StatItemData(
@@ -969,7 +922,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                       value: '9',
                       label: 'Sessions done',
                       trendText: '3 more',
-                      icon: Icons.check_circle_rounded,
+                      icon: Icons.self_improvement,
                       gradient: AppTheme.meditationGradient,
                       positiveTrend: true,
                     ),
@@ -978,33 +931,11 @@ class _HomeDashboardState extends State<HomeDashboard>
                       unit: 'min',
                       label: 'Therapy time',
                       trendText: '8min less',
-                      icon: Icons.favorite_rounded,
+                      icon: Icons.graphic_eq,
                       gradient: AppTheme.therapyGradient,
                       positiveTrend: false,
                     ),
                   ],
-                ),
-              ),
-              _kSectionSpacing,
-              _StaggeredFadeSlide(
-                controller: _controller,
-                delayMs: 100,
-                child: ValueListenableBuilder<DeviceConnectionStatus>(
-                  valueListenable: _deviceService.connectionStatus,
-                  builder: (context, connectionStatus, child) {
-                    return ValueListenableBuilder<bool>(
-                      valueListenable: _deviceService.isAutoConnectionAttempt,
-                      builder: (context, isAutoConnectionAttempt, child) {
-                        return _DeviceStatusCard(
-                          status: connectionStatus,
-                          isAutoConnectionAttempt: isAutoConnectionAttempt,
-                          isFindingDevice: _isFindingDevice,
-                          batteryLevel: _batteryLevel,
-                          onTap: _handleDeviceStatusTap,
-                        );
-                      },
-                    );
-                  },
                 ),
               ),
               _kSectionSpacing,
@@ -1122,25 +1053,72 @@ class _HomeDashboardState extends State<HomeDashboard>
               _kSectionSpacing,
               _StaggeredFadeSlide(
                 controller: _controller,
-                delayMs: 800,
-                child: _RecentValuesCard(recentValues: _recentValues),
+                delayMs: 500,
+                child: ValueListenableBuilder<DeviceConnectionStatus>(
+                  valueListenable: _deviceService.connectionStatus,
+                  builder: (context, status, _) {
+                    return ValueListenableBuilder<bool>(
+                      valueListenable: _deviceManager.isSyncing,
+                      builder: (context, isSyncing, _) {
+                        return _RecentSessionsCard(
+                          sessions: _offlineSessions,
+                          isLoading: _isLoadingOfflineSessions,
+                          isSyncing: isSyncing,
+                          isDeviceDisconnected:
+                              status == DeviceConnectionStatus.disconnected,
+                          isDeviceConnecting:
+                              status == DeviceConnectionStatus.connecting,
+                          onViewAll: () => Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const SessionsHistoryPage(),
+                            ),
+                          ),
+                          onSessionTap: (session) =>
+                              Navigator.of(context).push<void>(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      SessionDetailScreen(session: session),
+                                ),
+                              ),
+                          onSyncNow: () => unawaited(_handleSyncNow()),
+                        );
+                      },
+                    );
+                  },
+                ),
               ),
               _kSectionSpacing,
               _StaggeredFadeSlide(
                 controller: _controller,
-                delayMs: 900,
-                child: _OfflineSessionsCard(
-                  sessions: _offlineSessions,
-                  isLoading: _isLoadingOfflineSessions,
-                  isSyncing: _deviceManager.isSyncing.value,
-                  onViewAll: () => widget.onNavigateToPage(2),
-                ),
+                delayMs: 800,
+                child: _RecentValuesCard(recentValues: _recentValues),
               ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _handleSyncNow() async {
+    final status = _deviceService.connectionStatus.value;
+    if (status == DeviceConnectionStatus.connected) {
+      // Already connected — nudge a fresh sync by toggling reconnect path.
+      // Simplest robust way: reuse the existing connect flow, which is a
+      // no-op when already connected and otherwise does the right thing.
+      return;
+    }
+    try {
+      await _bluetoothManager.connect();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Couldn\'t reach the pod: ${e.toString()}'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 }
 
@@ -1178,39 +1156,413 @@ class _StaggeredFadeSlide extends StatelessWidget {
   }
 }
 
-class _StreakChip extends StatelessWidget {
-  const _StreakChip({this.days = 7});
+class _TopHeaderBar extends StatefulWidget {
+  final DeviceConnectionStatus status;
+  final bool isAutoConnectionAttempt;
+  final bool isFindingDevice;
+  final bool isSyncing;
+  final bool isLive;
+  final int batteryLevel;
+  final VoidCallback onTap;
 
-  final int days;
+  const _TopHeaderBar({
+    required this.status,
+    required this.isAutoConnectionAttempt,
+    required this.isFindingDevice,
+    required this.isSyncing,
+    required this.isLive,
+    required this.batteryLevel,
+    required this.onTap,
+  });
 
-  static const _accent = AppTheme.purple600;
-  static const _surface = Color(0xFFF5F3FF);
+  @override
+  State<_TopHeaderBar> createState() => _TopHeaderBarState();
+}
+
+class _TopHeaderBarState extends State<_TopHeaderBar>
+    with TickerProviderStateMixin {
+  late final AnimationController _pulseCtrl;
+  late final Animation<double> _pulseAnim;
+
+  // ── Connection celebration animation ──────────────────────────────
+  late final AnimationController _connectCtrl;
+  late final Animation<double> _connectScale;
+  late final Animation<double> _connectGlow;
+
+  // ── Rotating border for pending states ────────────────────────────
+  late final AnimationController _spinCtrl;
+
+  DeviceConnectionStatus? _prevStatus;
+
+  // ── Motivational word pool (shown with typewriter effect) ──────────
+  static const _motivationalWords = [
+    'Focus',
+    'Breathe',
+    'Balance',
+    'Steady',
+    'Posture',
+    'Stand tall',
+    'Be present',
+    'Reset',
+    'Own it',
+    'Redefining posture',
+    'Stay aligned',
+    'Be in the moment',
+    'Posture Matters',
+  ];
+
+  String _chosenText = '';
+  String _displayedText = '';
+  Timer? _typewriterTimer;
+  Timer? _cycleTimer;
+  int _charIndex = 0;
+  int _cycleCount = 0;
+  static const _maxCyclesPerBurst = 3;
+  static const _delayBetweenCycles = Duration(seconds: 5);
+  static const _burstInterval = Duration(seconds: 60);
+
+  String _pickTextForSession() {
+    final rand = math.Random();
+    final now = DateTime.now();
+    final h = now.hour;
+
+    // ~30 % chance to show a time-aware greeting instead of motivational word
+    if (rand.nextDouble() < 0.30) {
+      if (h >= 5 && h < 12) return 'Good morning';
+      if (h >= 12 && h < 17) return 'Good afternoon';
+      if (h >= 17 && h < 21) return 'Good evening';
+      return 'Welcome back';
+    }
+    return _motivationalWords[rand.nextInt(_motivationalWords.length)];
+  }
+
+  // ── Typewriter engine ─────────────────────────────────────────────
+  void _startTypewriterCycle() {
+    _cycleCount = 0;
+    _runSingleTypewrite();
+  }
+
+  void _runSingleTypewrite() {
+    _charIndex = 0;
+    _displayedText = '';
+    if (mounted) setState(() {});
+
+    _typewriterTimer?.cancel();
+    _typewriterTimer = Timer.periodic(const Duration(milliseconds: 80), (
+      timer,
+    ) {
+      if (_charIndex < _chosenText.length) {
+        _charIndex++;
+        _displayedText = _chosenText.substring(0, _charIndex);
+        if (mounted) setState(() {});
+      } else {
+        timer.cancel();
+        _cycleCount++;
+        if (_cycleCount < _maxCyclesPerBurst) {
+          Future.delayed(_delayBetweenCycles, () {
+            if (mounted) _runSingleTypewrite();
+          });
+        }
+      }
+    });
+  }
+
+  void _scheduleBursts() {
+    _startTypewriterCycle();
+    _cycleTimer?.cancel();
+    _cycleTimer = Timer.periodic(_burstInterval, (_) {
+      if (mounted) _startTypewriterCycle();
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+    _pulseAnim = Tween<double>(
+      begin: 0.35,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+
+    _connectCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
+    _connectScale = Tween<double>(
+      begin: 1.0,
+      end: 1.15,
+    ).animate(CurvedAnimation(parent: _connectCtrl, curve: Curves.easeOutBack));
+    _connectGlow = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _connectCtrl, curve: Curves.easeOut));
+
+    _spinCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat();
+
+    _prevStatus = widget.status;
+    _chosenText = _pickTextForSession();
+    _scheduleBursts();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TopHeaderBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.status != widget.status) {
+      if (widget.status == DeviceConnectionStatus.connected &&
+          _prevStatus != DeviceConnectionStatus.connected) {
+        _connectCtrl.forward().then((_) => _connectCtrl.reverse());
+      }
+      _prevStatus = widget.status;
+    }
+  }
+
+  @override
+  void dispose() {
+    _typewriterTimer?.cancel();
+    _cycleTimer?.cancel();
+    _pulseCtrl.dispose();
+    _connectCtrl.dispose();
+    _spinCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final isConnected = widget.status == DeviceConnectionStatus.connected;
+    final isConnecting = widget.status == DeviceConnectionStatus.connecting;
+    final isPending =
+        isConnecting || widget.isFindingDevice || widget.isSyncing;
+
+    final Color accentColor;
+    final IconData statusIcon;
+    final String statusLabel;
+
+    if (widget.isFindingDevice) {
+      accentColor = const Color(0xFFF59E0B);
+      statusIcon = Icons.bluetooth_searching_rounded;
+      statusLabel = 'Finding…';
+    } else if (isConnecting) {
+      accentColor = const Color(0xFFF59E0B);
+      statusIcon = Icons.bluetooth_searching_rounded;
+      statusLabel = widget.isAutoConnectionAttempt
+          ? 'Auto-connecting'
+          : 'Connecting…';
+    } else if (widget.isSyncing) {
+      accentColor = const Color(0xFF3B82F6);
+      statusIcon = Icons.sync_rounded;
+      statusLabel = 'Syncing';
+    } else if (widget.isLive) {
+      accentColor = const Color(0xFFEF4444);
+      statusIcon = Icons.sensors_rounded;
+      statusLabel = 'Live';
+    } else if (isConnected) {
+      accentColor = const Color(0xFF22C55E);
+      statusIcon = Icons.bluetooth_connected_rounded;
+      statusLabel = 'Connected';
+    } else {
+      accentColor = AppTheme.textMuted;
+      statusIcon = Icons.bluetooth_rounded;
+      statusLabel = 'Tap to connect';
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        // ── Left: logo + tagline ────────────────────────────────────
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SvgPicture.asset(
+                'assets/logosvg.svg',
+                height: 32,
+                fit: BoxFit.contain,
+                alignment: Alignment.centerLeft,
+              ),
+              const SizedBox(height: 2),
+              ShaderMask(
+                shaderCallback: (bounds) =>
+                    AppTheme.trainingGradient.createShader(
+                      Rect.fromLTWH(0, 0, bounds.width, bounds.height),
+                    ),
+                blendMode: BlendMode.srcIn,
+                child: Text(
+                  _displayedText,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    height: 1.1,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        // ── Right: connection chip ──────────────────────────────────
+        GestureDetector(
+          onTap: widget.onTap,
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedBuilder(
+            animation: Listenable.merge([
+              _connectScale,
+              _connectGlow,
+              _pulseAnim,
+              _spinCtrl,
+            ]),
+            builder: (context, child) {
+              return Transform.scale(
+                scale: _connectScale.value,
+                child: _buildConnectionChip(
+                  accentColor: accentColor,
+                  statusIcon: statusIcon,
+                  statusLabel: statusLabel,
+                  isConnected: isConnected,
+                  isPending: isPending,
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildConnectionChip({
+    required Color accentColor,
+    required IconData statusIcon,
+    required String statusLabel,
+    required bool isConnected,
+    required bool isPending,
+  }) {
+    final batteryIcon = widget.batteryLevel > 70
+        ? Icons.battery_full_rounded
+        : widget.batteryLevel > 30
+        ? Icons.battery_5_bar_rounded
+        : Icons.battery_alert_rounded;
+    final batteryColor = widget.batteryLevel > 30
+        ? AppTheme.textSecondary
+        : const Color(0xFFEF4444);
+
+    final glowOpacity = _connectGlow.value * 0.5;
+    final breathe = isConnected ? 0.04 * _pulseAnim.value : 0.0;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: _surface,
-        borderRadius: BorderRadius.circular(100),
+        color: Colors.white.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: accentColor.withValues(alpha: isPending ? 0.35 : 0.15),
+          width: 1,
+        ),
+        boxShadow: [
+          const BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 16,
+            offset: Offset(0, 4),
+          ),
+          if (glowOpacity > 0)
+            BoxShadow(
+              color: accentColor.withValues(alpha: glowOpacity),
+              blurRadius: 20,
+              spreadRadius: 1,
+            ),
+          if (isConnected)
+            BoxShadow(
+              color: accentColor.withValues(alpha: 0.04 + breathe),
+              blurRadius: 14,
+            ),
+        ],
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          const SizedBox(
-            width: 18,
-            height: 20,
-            child: CustomPaint(painter: _StreakFlamePainter()),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '$days days',
-            style: const TextStyle(
-              color: _accent,
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              height: 1.1,
+          // ── Animated icon with spinner ──────────────────────────
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (isPending)
+                  Transform.rotate(
+                    angle: _spinCtrl.value * 2 * math.pi,
+                    child: CustomPaint(
+                      size: const Size(28, 28),
+                      painter: _ArcPainter(color: accentColor),
+                    ),
+                  ),
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: accentColor.withValues(alpha: 0.10 + breathe),
+                    shape: BoxShape.circle,
+                  ),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    switchInCurve: Curves.easeOutBack,
+                    switchOutCurve: Curves.easeIn,
+                    transitionBuilder: (child, anim) => ScaleTransition(
+                      scale: anim,
+                      child: FadeTransition(opacity: anim, child: child),
+                    ),
+                    child: Icon(
+                      statusIcon,
+                      key: ValueKey(statusIcon),
+                      size: 15,
+                      color: accentColor,
+                    ),
+                  ),
+                ),
+              ],
             ),
+          ),
+          const SizedBox(width: 10),
+          // ── Status label ───────────────────────────────────────
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 250),
+            child: Text(
+              statusLabel,
+              key: ValueKey(statusLabel),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: accentColor,
+                letterSpacing: -0.1,
+              ),
+            ),
+          ),
+          // ── Battery (when connected) ───────────────────────────
+          if (isConnected) ...[
+            Container(
+              width: 1,
+              height: 16,
+              color: AppTheme.border.withValues(alpha: 0.5),
+            ),
+            const SizedBox(width: 10),
+            Icon(batteryIcon, size: 14, color: batteryColor),
+            const SizedBox(width: 3),
+            Text(
+              '${widget.batteryLevel}%',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: batteryColor,
+              ),
+            ),
+          ],
+          const SizedBox(width: 4),
+          Icon(
+            Icons.chevron_right_rounded,
+            size: 18,
+            color: AppTheme.textMuted.withValues(alpha: 0.5),
           ),
         ],
       ),
@@ -1218,189 +1570,23 @@ class _StreakChip extends StatelessWidget {
   }
 }
 
-class _StreakFlamePainter extends CustomPainter {
-  const _StreakFlamePainter();
-
-  static const _fill = AppTheme.purple600;
+class _ArcPainter extends CustomPainter {
+  final Color color;
+  const _ArcPainter({required this.color});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height;
-    final path = Path()
-      ..moveTo(w * 0.5, h * 0.05)
-      ..cubicTo(w * 0.95, h * 0.32, w * 0.92, h * 0.72, w * 0.5, h * 0.96)
-      ..cubicTo(w * 0.08, h * 0.72, w * 0.05, h * 0.32, w * 0.5, h * 0.05)
-      ..close();
-    canvas.drawPath(path, Paint()..color = _fill);
-    canvas.drawCircle(
-      Offset(w * 0.5, h * 0.76),
-      w * 0.11,
-      Paint()..color = Colors.white,
-    );
+    final paint = Paint()
+      ..color = color.withValues(alpha: 0.6)
+      ..strokeWidth = 2.2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    final rect = Offset.zero & size;
+    canvas.drawArc(rect, 0, math.pi * 1.2, false, paint);
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _DeviceStatusCard extends StatelessWidget {
-  final DeviceConnectionStatus status;
-  final bool isAutoConnectionAttempt;
-  final bool isFindingDevice;
-  final int batteryLevel;
-  final VoidCallback onTap;
-
-  const _DeviceStatusCard({
-    required this.status,
-    required this.isAutoConnectionAttempt,
-    required this.isFindingDevice,
-    required this.batteryLevel,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isConnected = status == DeviceConnectionStatus.connected;
-    final isConnecting = status == DeviceConnectionStatus.connecting;
-    final statusText = isFindingDevice
-        ? 'Finding device'
-        : isConnecting
-        ? (isAutoConnectionAttempt ? 'Auto connecting' : 'Connecting')
-        : isConnected
-        ? 'Connected'
-        : 'Disconnected';
-    final statusColor = (isConnecting || isFindingDevice)
-        ? const Color(0xFFF59E0B)
-        : _kPrimaryBlue;
-    final iconColor = isConnected
-        ? _kPrimaryBlue
-        : (isConnecting || isFindingDevice)
-        ? const Color(0xFFF59E0B)
-        : Colors.grey.shade400;
-    final batteryTierColor = _batteryTierColor(batteryLevel);
-    final batteryTextColor = _batteryTierTextColor(batteryLevel);
-
-    return _SurfaceCard(
-      padding: EdgeInsets.zero,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(22),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: AppTheme.connectedBg,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Icon(Icons.bluetooth, color: iconColor, size: 20),
-                    ),
-                    const SizedBox(width: 12),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Device Status',
-                          style: TextStyle(
-                            color: _kMutedText,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 250),
-                          child: Text(
-                            statusText,
-                            key: ValueKey(statusText),
-                            style: TextStyle(
-                              color: (isConnecting || isFindingDevice)
-                                  ? statusColor
-                                  : iconColor,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    if (isConnecting || isFindingDevice) ...[
-                      const SizedBox(
-                        height: 16,
-                        width: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      const SizedBox(width: 12),
-                    ],
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: batteryTierColor,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.battery_full,
-                            color: batteryTextColor,
-                            size: 18,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            '$batteryLevel%',
-                            style: TextStyle(
-                              color: batteryTextColor,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-Color _batteryTierColor(int level) {
-  if (level < 25) {
-    return const Color(0xFFFEE2E2);
-  }
-  if (level < 60) {
-    return const Color(0xFFFEF3C7);
-  }
-  return AppTheme.successBg;
-}
-
-Color _batteryTierTextColor(int level) {
-  if (level < 25) {
-    return const Color(0xFFDC2626);
-  }
-  if (level < 60) {
-    return const Color(0xFFF59E0B);
-  }
-  return AppTheme.successText;
+  bool shouldRepaint(covariant _ArcPainter old) => old.color != color;
 }
 
 class _PostureGaugeCard extends StatelessWidget {
@@ -1522,145 +1708,623 @@ class _RecentValuesCard extends StatelessWidget {
   }
 }
 
-class _OfflineSessionsCard extends StatelessWidget {
+class _RecentSessionsCard extends StatelessWidget {
   final List<SessionData> sessions;
   final bool isLoading;
   final bool isSyncing;
+  final bool isDeviceDisconnected;
+  final bool isDeviceConnecting;
   final VoidCallback onViewAll;
+  final ValueChanged<SessionData> onSessionTap;
+  final VoidCallback onSyncNow;
 
-  const _OfflineSessionsCard({
+  const _RecentSessionsCard({
     required this.sessions,
     required this.isLoading,
     required this.isSyncing,
+    required this.isDeviceDisconnected,
+    required this.isDeviceConnecting,
     required this.onViewAll,
+    required this.onSessionTap,
+    required this.onSyncNow,
   });
 
   @override
   Widget build(BuildContext context) {
-    return _SurfaceCard(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Device Sessions',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.textPrimary,
-                  ),
+    final liveSessions = sessions.where((s) => s.isLive).toList();
+    final finishedSessions = sessions.where((s) => !s.isLive).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header – matches Quick Modes style
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Recent Sessions',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+            TextButton(
+              onPressed: onViewAll,
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(0, 0),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                foregroundColor: _kPrimaryBlue,
+                textStyle: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
-              TextButton(onPressed: onViewAll, child: const Text('View all')),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            isSyncing
-                ? 'Syncing stored sessions from device...'
-                : 'Live sessions appear instantly; offline sessions sync on reconnect.',
-            style: const TextStyle(fontSize: 12, color: _kMutedText),
-          ),
-          const SizedBox(height: 12),
-          if (isLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: LinearProgressIndicator(minHeight: 3),
-            )
-          else if (sessions.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                'No device sessions yet.',
-                style: TextStyle(fontSize: 12, color: _kMutedText),
+              child: const Row(
+                children: [
+                  Text('View All'),
+                  SizedBox(width: 4),
+                  Icon(Icons.chevron_right, size: 16),
+                ],
               ),
-            )
-          else
-            ...sessions.map((session) => _OfflineSessionRow(session: session)),
+            ),
+          ],
+        ),
+
+        // Status banner: disconnect / syncing
+        if (isDeviceDisconnected) ...[
+          const SizedBox(height: 12),
+          _DisconnectedBanner(
+            isReconnecting: isDeviceConnecting,
+            onSyncNow: onSyncNow,
+          ),
+        ] else if (isSyncing) ...[
+          const SizedBox(height: 12),
+          const _HomeSyncingBanner(),
         ],
-      ),
+
+        const SizedBox(height: 12),
+
+        if (isLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: LinearProgressIndicator(minHeight: 3),
+          )
+        else if (sessions.isEmpty)
+          const _EmptyRecentSessions()
+        else ...[
+          for (final live in liveSessions) ...[
+            _LiveSessionRow(session: live, onTap: () => onSessionTap(live)),
+            const SizedBox(height: 8),
+          ],
+          for (
+            var i = 0;
+            i < finishedSessions.length && (liveSessions.length + i) < 5;
+            i++
+          ) ...[
+            _HomeSessionItem(
+              session: finishedSessions[i],
+              onTap: () => onSessionTap(finishedSessions[i]),
+            ),
+            if ((liveSessions.length + i + 1) <
+                (liveSessions.length + finishedSessions.length).clamp(0, 5))
+              const SizedBox(height: 8),
+          ],
+        ],
+      ],
     );
   }
 }
 
-class _OfflineSessionRow extends StatelessWidget {
-  final SessionData session;
-
-  const _OfflineSessionRow({required this.session});
+class _DisconnectedBanner extends StatelessWidget {
+  final bool isReconnecting;
+  final VoidCallback onSyncNow;
+  const _DisconnectedBanner({
+    required this.isReconnecting,
+    required this.onSyncNow,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final isPosture = session.type == SessionType.posture;
-    final color = isPosture ? _kPrimaryBlue : _kBadPostureRed;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 11, 10, 11),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E6),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE2A8)),
+      ),
       child: Row(
         children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              isPosture ? Icons.accessibility_new : Icons.favorite,
-              color: color,
-              size: 18,
-            ),
+          const Icon(
+            Icons.bluetooth_disabled_rounded,
+            size: 18,
+            color: Color(0xFFB45309),
           ),
           const SizedBox(width: 10),
-          Expanded(
+          const Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        session.name,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.textPrimary,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (session.isLive) ...[
-                      const SizedBox(width: 6),
-                      const _HomeLiveTag(),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 2),
                 Text(
-                  '${session.time} · ${session.duration}',
-                  style: const TextStyle(fontSize: 12, color: _kMutedText),
+                  'Device disconnected',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: Color(0xFF92400E),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                SizedBox(height: 1),
+                Text(
+                  'Sessions are still being saved on the pod. '
+                  'Sync to pull them in.',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFFB45309),
+                    height: 1.3,
+                  ),
                 ),
               ],
             ),
           ),
-          if (session.score != null)
-            Text(
-              '${session.score}%',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: color,
+          const SizedBox(width: 8),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: isReconnecting ? null : onSyncNow,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: isReconnecting
+                    ? const Color(0xFFFFE2A8)
+                    : const Color(0xFFB45309),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (isReconnecting) ...[
+                    const SizedBox(
+                      width: 11,
+                      height: 11,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.6,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Color(0xFFB45309),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ] else ...[
+                    const Icon(
+                      Icons.sync_rounded,
+                      size: 13,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 5),
+                  ],
+                  Text(
+                    isReconnecting ? 'Syncing' : 'Sync now',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                      color: isReconnecting
+                          ? const Color(0xFFB45309)
+                          : Colors.white,
+                    ),
+                  ),
+                ],
               ),
             ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _HomeLiveTag extends StatelessWidget {
-  const _HomeLiveTag();
+class _HomeSyncingBanner extends StatelessWidget {
+  const _HomeSyncingBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
+      decoration: BoxDecoration(
+        color: _kPrimaryBlue.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: const [
+          SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.8,
+              valueColor: AlwaysStoppedAnimation<Color>(_kPrimaryBlue),
+            ),
+          ),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Syncing offline sessions from your pod…',
+              style: TextStyle(
+                fontSize: 12,
+                color: _kPrimaryBlue,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyRecentSessions extends StatelessWidget {
+  const _EmptyRecentSessions();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 18, 14, 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F8FC),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: _kPrimaryBlue.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Icon(
+              Icons.history_rounded,
+              size: 18,
+              color: _kPrimaryBlue,
+            ),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'No sessions yet',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Start a posture or therapy session and it shows up here.',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: _kMutedText,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LiveSessionRow extends StatelessWidget {
+  final SessionData session;
+  final VoidCallback onTap;
+  const _LiveSessionRow({required this.session, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final isPosture = session.type == SessionType.posture;
+    final accent = isPosture ? _kPrimaryBlue : _kPrimaryGreen;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(13),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(12, 11, 12, 11),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                accent.withValues(alpha: 0.10),
+                accent.withValues(alpha: 0.03),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(color: accent.withValues(alpha: 0.30)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  isPosture
+                      ? Icons.accessibility_new_rounded
+                      : Icons.vibration_rounded,
+                  size: 19,
+                  color: accent,
+                ),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            session.name,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textPrimary,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        const _HomeLivePill(),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      session.duration == '0s'
+                          ? 'Just started · live now'
+                          : 'In progress · ${session.duration}',
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: _kMutedText,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (isPosture && session.score != null)
+                Text(
+                  '${session.score}%',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: accent,
+                    letterSpacing: -0.4,
+                  ),
+                )
+              else if (!isPosture && session.pattern != null)
+                Text(
+                  '#${session.pattern}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: accent,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeSessionItem extends StatelessWidget {
+  final SessionData session;
+  final VoidCallback onTap;
+  const _HomeSessionItem({required this.session, required this.onTap});
+
+  static const _kText = Color(0xFF1A1A2E);
+  static const _kTextHint = Color(0xFFBBBBCC);
+  static const _kBlue = AppTheme.brandPrimary;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPosture = session.type == SessionType.posture;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(13, 13, 10, 13),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFEEEEF0), width: 0.5),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x14000000),
+              blurRadius: 18,
+              offset: Offset(0, 8),
+            ),
+            BoxShadow(
+              color: Color(0x08000000),
+              blurRadius: 4,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isPosture
+                      ? const [Color(0xFFC084FC), Color(0xFFEC4899)]
+                      : const [Color(0xFF60A5FA), Color(0xFF06B6D4)],
+                ),
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Icon(
+                isPosture ? Icons.accessibility_new_rounded : Icons.graphic_eq,
+                color: Colors.white,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          session.name,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            color: _kText,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (session.isLive) ...[
+                        const SizedBox(width: 6),
+                        const _HomeLivePill(),
+                      ],
+                      const SizedBox(width: 8),
+                      Text(
+                        session.time,
+                        style: const TextStyle(fontSize: 10, color: _kTextHint),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 7),
+                  Row(
+                    children: [
+                      _HomeSessionMiniStat(
+                        value: session.duration,
+                        label: 'Duration',
+                      ),
+                      if (session.score != null) ...[
+                        const SizedBox(width: 14),
+                        _HomeSessionMiniStat(
+                          value: '${session.score}%',
+                          label: 'Good posture',
+                        ),
+                      ],
+                      if (session.alerts != null) ...[
+                        const SizedBox(width: 14),
+                        _HomeSessionMiniStat(
+                          value: '${session.alerts}×',
+                          label: 'Alerts',
+                        ),
+                      ],
+                      if (session.pattern != null) ...[
+                        const SizedBox(width: 14),
+                        _HomeSessionMiniStat(
+                          value: '#${session.pattern}',
+                          label: 'Pattern',
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (session.score != null) ...[
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(3),
+                      child: LinearProgressIndicator(
+                        value: session.score! / 100,
+                        backgroundColor: const Color(0xFFEEEEF8),
+                        valueColor: const AlwaysStoppedAnimation<Color>(_kBlue),
+                        minHeight: 3.5,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            const Icon(
+              Icons.chevron_right_rounded,
+              color: Color(0xFFCCCCDD),
+              size: 20,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeSessionMiniStat extends StatelessWidget {
+  final String value, label;
+  const _HomeSessionMiniStat({required this.value, required this.label});
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        value,
+        style: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: Color(0xFF1A1A2E),
+          height: 1.2,
+        ),
+      ),
+      Text(
+        label,
+        style: const TextStyle(
+          fontSize: 10,
+          color: Color(0xFFBBBBCC),
+          height: 1.3,
+        ),
+      ),
+    ],
+  );
+}
+
+class _HomeLivePill extends StatefulWidget {
+  const _HomeLivePill();
+
+  @override
+  State<_HomeLivePill> createState() => _HomeLivePillState();
+}
+
+class _HomeLivePillState extends State<_HomeLivePill>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1671,13 +2335,237 @@ class _HomeLiveTag extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: _kBadPostureRed.withValues(alpha: 0.18)),
       ),
-      child: const Text(
-        'Live',
-        style: TextStyle(
-          color: _kBadPostureRed,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedBuilder(
+            animation: _ctrl,
+            builder: (_, __) => Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                color: _kBadPostureRed.withValues(
+                  alpha: 0.55 + 0.45 * _ctrl.value,
+                ),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          const SizedBox(width: 5),
+          const Text(
+            'LIVE',
+            style: TextStyle(
+              color: _kBadPostureRed,
+              fontSize: 9.5,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectedDeviceSheet extends StatelessWidget {
+  final int batteryLevel;
+  final VoidCallback onDisconnect;
+  final VoidCallback onCancel;
+
+  const _ConnectedDeviceSheet({
+    required this.batteryLevel,
+    required this.onDisconnect,
+    required this.onCancel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final batteryColor = batteryLevel > 30
+        ? const Color(0xFF16A34A)
+        : const Color(0xFFEF4444);
+    final batteryIcon = batteryLevel > 70
+        ? Icons.battery_full_rounded
+        : batteryLevel > 30
+        ? Icons.battery_5_bar_rounded
+        : Icons.battery_alert_rounded;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 28),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x18000000),
+            blurRadius: 32,
+            offset: Offset(0, -4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          // Handle
+          Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: const Color(0xFFE5E7EB),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 24),
+          // Device info
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Row(
+              children: [
+                // Product image
+                Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFF),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: const Color(0xFFE5E7EB)),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Image.asset(
+                      'assets/product.png',
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'AlignEye Pod',
+                        style: TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Row(
+                        children: [
+                          Container(
+                            width: 7,
+                            height: 7,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFF22C55E),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Connected',
+                            style: TextStyle(
+                              color: Color(0xFF16A34A),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                // Battery chip
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 11,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: batteryColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(batteryIcon, color: batteryColor, size: 15),
+                      const SizedBox(width: 4),
+                      Text(
+                        '$batteryLevel%',
+                        style: TextStyle(
+                          color: batteryColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Divider(color: const Color(0xFFF1F5F9), thickness: 1),
+          ),
+          const SizedBox(height: 16),
+          // Buttons
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
+            child: Column(
+              children: [
+                GestureDetector(
+                  onTap: onDisconnect,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: const Color(0xFFEF4444).withValues(alpha: 0.25),
+                      ),
+                    ),
+                    child: const Text(
+                      'Disconnect & Find New Pod',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Color(0xFFEF4444),
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                GestureDetector(
+                  onTap: onCancel,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFF),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFE5E7EB)),
+                    ),
+                    child: const Text(
+                      'Cancel',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
       ),
     );
   }
@@ -2154,21 +3042,33 @@ class _ModeButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: selected ? _kPrimaryBlue : const Color(0xFFF1F5F9),
+    return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: selected ? Colors.white : AppTheme.textPrimary,
-              fontWeight: FontWeight.w600,
-              fontSize: 13,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: selected
+              ? const LinearGradient(
+                  colors: [Color(0xFFA855F7), Color(0xFFEC4899)],
+                )
+              : null,
+          color: selected ? null : const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: selected ? Colors.white : AppTheme.textPrimary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
             ),
           ),
         ),
@@ -2615,6 +3515,15 @@ class _QuickModesSection extends StatelessWidget {
                       onMeditationModeTap();
                       return;
                     }
+                    if (mode.title == 'Walking') {
+                      Navigator.of(context).push<void>(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              const _ComingSoonPage(title: 'Walking Mode'),
+                        ),
+                      );
+                      return;
+                    }
                     onModeTap(mode.targetIndex);
                   },
                 ),
@@ -2726,52 +3635,285 @@ class _QuickModeCard extends StatelessWidget {
 
 class _StatsSummaryCard extends StatelessWidget {
   final List<_StatItemData> items;
+  final int streakDays;
 
-  const _StatsSummaryCard({required this.items});
+  const _StatsSummaryCard({required this.items, this.streakDays = 12});
 
   @override
   Widget build(BuildContext context) {
-    assert(items.length == 4, '_StatsSummaryCard expects 4 items');
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: 16),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                "Today's Summary",
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary,
-                ),
-              ),
-              const _StreakChip(days: 7),
-            ],
-          ),
-        ),
-        SizedBox(
-          height: 156,
-          child: ListView.separated(
-            clipBehavior: Clip.none,
-            scrollDirection: Axis.horizontal,
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.only(right: 24),
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 12),
-            itemBuilder: (context, index) {
-              return SizedBox(
-                width: 132,
-                child: _SummaryMetricTile(item: items[index]),
-              );
-            },
-          ),
-        ),
-      ],
+    return SizedBox(
+      height: 156,
+      child: ListView.separated(
+        clipBehavior: Clip.none,
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.only(right: 24),
+        itemCount: items.length + 1,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (context, index) {
+          if (index == 0) {
+            return SizedBox(width: 132, child: _StreakTile(days: streakDays));
+          }
+          return SizedBox(
+            width: 132,
+            child: _SummaryMetricTile(item: items[index - 1]),
+          );
+        },
+      ),
     );
   }
+}
+
+class _StreakTile extends StatefulWidget {
+  final int days;
+
+  const _StreakTile({required this.days});
+
+  @override
+  State<_StreakTile> createState() => _StreakTileState();
+}
+
+class _StreakTileState extends State<_StreakTile>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scaleAnim;
+  late final Animation<double> _glowAnim;
+  late final Animation<double> _flameFlicker;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2400),
+    )..repeat(reverse: true);
+    _scaleAnim = Tween<double>(
+      begin: 0.92,
+      end: 1.08,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+    _glowAnim = Tween<double>(
+      begin: 0.0,
+      end: 8.0,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+    _flameFlicker = Tween<double>(
+      begin: -0.04,
+      end: 0.04,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        return Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF3B82F6), Color(0xFF2563EB), Color(0xFF1D4ED8)],
+              stops: [0.0, 0.5, 1.0],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(
+                  0xFF3B82F6,
+                ).withValues(alpha: 0.25 + _glowAnim.value * 0.02),
+                blurRadius: 16 + _glowAnim.value,
+                offset: const Offset(0, 6),
+                spreadRadius: _glowAnim.value * 0.3,
+              ),
+            ],
+          ),
+          child: Stack(
+            clipBehavior: Clip.hardEdge,
+            children: [
+              // Subtle radial highlight
+              Positioned(
+                top: -20,
+                right: -20,
+                child: Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        Colors.white.withValues(alpha: 0.12),
+                        Colors.white.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              // Shimmer line
+              Positioned(
+                top: 0,
+                bottom: 0,
+                left: -60 + (_ctrl.value * 260),
+                child: Transform.rotate(
+                  angle: -0.4,
+                  child: Container(
+                    width: 30,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.white.withValues(alpha: 0.0),
+                          Colors.white.withValues(alpha: 0.08),
+                          Colors.white.withValues(alpha: 0.0),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              // Content
+              Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // Number
+                    Text(
+                      '${widget.days}',
+                      style: const TextStyle(
+                        fontSize: 36,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                        height: 1.0,
+                        letterSpacing: -1,
+                      ),
+                    ),
+                    // Label
+                    const Text(
+                      'Streak\nDays',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                        height: 1.25,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Animated fire icon (bottom right)
+              Positioned(
+                bottom: -6,
+                right: -2,
+                child: Transform.rotate(
+                  angle: _flameFlicker.value,
+                  child: Transform.scale(
+                    scale: _scaleAnim.value,
+                    alignment: Alignment.bottomCenter,
+                    child: SizedBox(
+                      width: 56,
+                      height: 64,
+                      child: CustomPaint(
+                        painter: _StreakFirePainter(progress: _ctrl.value),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StreakFirePainter extends CustomPainter {
+  final double progress;
+
+  const _StreakFirePainter({required this.progress});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+
+    // Outer flame (orange-red)
+    final outerPath = Path()
+      ..moveTo(w * 0.50, h * 0.02)
+      ..cubicTo(w * 0.20, h * 0.20, w * -0.05, h * 0.45, w * 0.15, h * 0.70)
+      ..cubicTo(w * 0.22, h * 0.82, w * 0.30, h * 0.95, w * 0.50, h * 0.98)
+      ..cubicTo(w * 0.70, h * 0.95, w * 0.78, h * 0.82, w * 0.85, h * 0.70)
+      ..cubicTo(w * 1.05, h * 0.45, w * 0.80, h * 0.20, w * 0.50, h * 0.02)
+      ..close();
+
+    final outerPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          const Color(0xFFFF6B35),
+          Color.lerp(
+            const Color(0xFFFF4500),
+            const Color(0xFFFF6347),
+            progress,
+          )!,
+          const Color(0xFFFF8C00),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, w, h));
+    canvas.drawPath(outerPath, outerPaint);
+
+    // Inner flame (yellow-orange)
+    final innerPath = Path()
+      ..moveTo(w * 0.50, h * 0.28)
+      ..cubicTo(w * 0.30, h * 0.42, w * 0.18, h * 0.55, w * 0.28, h * 0.72)
+      ..cubicTo(w * 0.34, h * 0.85, w * 0.42, h * 0.94, w * 0.50, h * 0.96)
+      ..cubicTo(w * 0.58, h * 0.94, w * 0.66, h * 0.85, w * 0.72, h * 0.72)
+      ..cubicTo(w * 0.82, h * 0.55, w * 0.70, h * 0.42, w * 0.50, h * 0.28)
+      ..close();
+
+    final innerPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          const Color(0xFFFFD700),
+          Color.lerp(
+            const Color(0xFFFFA500),
+            const Color(0xFFFFD700),
+            progress,
+          )!,
+          const Color(0xFFFFE066),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, w, h));
+    canvas.drawPath(innerPath, innerPaint);
+
+    // Core (bright yellow-white)
+    final corePath = Path()
+      ..moveTo(w * 0.50, h * 0.52)
+      ..cubicTo(w * 0.40, h * 0.62, w * 0.36, h * 0.72, w * 0.42, h * 0.82)
+      ..cubicTo(w * 0.45, h * 0.90, w * 0.48, h * 0.94, w * 0.50, h * 0.95)
+      ..cubicTo(w * 0.52, h * 0.94, w * 0.55, h * 0.90, w * 0.58, h * 0.82)
+      ..cubicTo(w * 0.64, h * 0.72, w * 0.60, h * 0.62, w * 0.50, h * 0.52)
+      ..close();
+
+    final corePaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFFFFFDE0), Color(0xFFFFE082)],
+      ).createShader(Rect.fromLTWH(0, 0, w, h));
+    canvas.drawPath(corePath, corePaint);
+  }
+
+  @override
+  bool shouldRepaint(_StreakFirePainter oldDelegate) =>
+      oldDelegate.progress != progress;
 }
 
 class _SummaryMetricTile extends StatelessWidget {
@@ -3172,6 +4314,112 @@ class _AllModesSheetItem extends StatelessWidget {
               size: 22,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ComingSoonPage extends StatelessWidget {
+  final String title;
+  const _ComingSoonPage({required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F8FC),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        leading: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: const Icon(
+            Icons.arrow_back_rounded,
+            color: Color(0xFF4B5563),
+            size: 22,
+          ),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.textPrimary,
+          ),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(0.5),
+          child: Container(height: 0.5, color: const Color(0xFFEEEEF0)),
+        ),
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFFFB7185), Color(0xFFEF4444)],
+                  ),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: const Icon(
+                  Icons.directions_walk_rounded,
+                  size: 40,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 28),
+              const Text(
+                'Coming Soon',
+                style: TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textPrimary,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Walking mode is under development.\nStay tuned for updates!',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 15,
+                  color: AppTheme.textSecondary,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 32),
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 32,
+                    vertical: 14,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _kPrimaryBlue,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Text(
+                    'Go Back',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

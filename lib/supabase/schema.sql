@@ -5,6 +5,12 @@
 -- the device never deletes local records until the ACK handshake completes,
 -- so duplicate inserts are possible in failure cases; consumers should be
 -- idempotent on (user_id, start_ts, type).
+--
+-- posture_events: jsonb array of {s,c} pairs, where `s` is the seconds-from-
+--   session-start at which a slouch began and `c` is the seconds at which it
+--   was corrected. `c == 65535` means the slouch was still active when the
+--   session ended.
+-- therapy_patterns: jsonb array of integer pattern indices played (in order).
 
 create table sessions (
   id               uuid primary key default gen_random_uuid(),
@@ -16,10 +22,13 @@ create table sessions (
   wrong_dur_sec    integer,
   therapy_pattern  integer,
   ts_synced        boolean default false,
+  posture_events   jsonb,
+  therapy_patterns jsonb,
   created_at       timestamptz default now()
 );
 
 create index on sessions (user_id, created_at desc);
+create index on sessions (user_id, start_ts desc);
 
 alter table sessions enable row level security;
 

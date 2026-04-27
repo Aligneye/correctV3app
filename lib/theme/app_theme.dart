@@ -253,9 +253,7 @@ class AppTheme {
         shadowColor: Colors.black.withValues(alpha: 0.08),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(radiusMd),
-          side: BorderSide(
-            color: isDark ? scheme.outline : glassBorder,
-          ),
+          side: BorderSide(color: isDark ? scheme.outline : glassBorder),
         ),
       ),
 
@@ -266,8 +264,10 @@ class AppTheme {
         hintStyle: TextStyle(color: textMuted),
         prefixIconColor: scheme.onSurfaceVariant,
         suffixIconColor: scheme.onSurfaceVariant,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(radiusMd),
           borderSide: BorderSide(color: scheme.outline),
@@ -296,10 +296,7 @@ class AppTheme {
           shape: btnShape,
           backgroundColor: scheme.primary,
           foregroundColor: scheme.onPrimary,
-          textStyle: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ),
 
@@ -311,10 +308,7 @@ class AppTheme {
           foregroundColor: scheme.onPrimary,
           elevation: 2,
           shadowColor: blue600.withValues(alpha: 0.3),
-          textStyle: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ),
 
@@ -324,20 +318,14 @@ class AppTheme {
           shape: btnShape,
           side: BorderSide(color: scheme.outline),
           foregroundColor: scheme.onSurface,
-          textStyle: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ),
 
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: scheme.primary,
-          textStyle: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           shape: btnShape,
         ),
       ),
@@ -361,9 +349,7 @@ class AppTheme {
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: scheme.surface,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(
-            top: Radius.circular(radiusXl),
-          ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(radiusXl)),
         ),
       ),
 
@@ -401,10 +387,7 @@ class AppTheme {
         ),
         labelColor: scheme.onSurface,
         unselectedLabelColor: textMuted,
-        labelStyle: const TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-        ),
+        labelStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
         unselectedLabelStyle: const TextStyle(
           fontSize: 14,
           fontWeight: FontWeight.w500,
@@ -426,9 +409,7 @@ class AppTheme {
       ),
 
       checkboxTheme: CheckboxThemeData(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(4),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
         fillColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) return scheme.primary;
           return isDark ? _dkInput : inputBg;

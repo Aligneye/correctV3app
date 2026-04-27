@@ -31,8 +31,8 @@ class DeviceManager {
   final ValueNotifier<SyncProgress?> lastProgress =
       ValueNotifier<SyncProgress?>(null);
 
-  /// Bumps on every sync completion; pages can watch this to trigger a
-  /// reload of the session list without holding onto a subscription.
+  /// Bumps on every sync completion or live-session change; pages can watch
+  /// this to trigger a reload of the session list.
   final ValueNotifier<int> syncCompletedTick = ValueNotifier<int>(0);
   final ValueNotifier<String?> activeSessionId = ValueNotifier<String?>(null);
 
@@ -40,6 +40,7 @@ class DeviceManager {
   LiveSessionRecorder? _liveSessionRecorder;
   StreamSubscription<SyncProgress>? _progressSub;
   bool _wired = false;
+  bool _lastConnected = false;
 
   /// Call once after BluetoothServiceManager.initialize(). Idempotent.
   void init() {
@@ -49,37 +50,71 @@ class DeviceManager {
     _liveSessionRecorder = LiveSessionRecorder(
       deviceService: _btManager.deviceService,
       activeSessionId: activeSessionId,
-      onSessionChanged: () => syncCompletedTick.value++,
+      onSessionChanged: _onLiveSessionChanged,
     )..start();
+  }
+
+  void _onLiveSessionChanged() {
+    syncCompletedTick.value++;
+    debugPrint('DeviceManager: live session changed, tick=${syncCompletedTick.value}');
+
+    // When a live session ends (mode switches from TRAINING/THERAPY to
+    // something else), the firmware stores the completed session to flash.
+    // Re-run sync so the app picks it up immediately instead of waiting
+    // for the next BLE reconnect.
+    if (_btManager.deviceService.connectionStatus.value ==
+        DeviceConnectionStatus.connected) {
+      _scheduleResync();
+    }
+  }
+
+  Timer? _resyncTimer;
+
+  void _scheduleResync() {
+    _resyncTimer?.cancel();
+    _resyncTimer = Timer(const Duration(seconds: 2), () {
+      if (_btManager.deviceService.connectionStatus.value ==
+          DeviceConnectionStatus.connected) {
+        debugPrint('DeviceManager: re-syncing after live session change');
+        unawaited(_startSync());
+      }
+    });
   }
 
   void _onStatusChanged() {
     final status = _btManager.deviceService.connectionStatus.value;
-    if (status == DeviceConnectionStatus.connected) {
+    final isConnected = status == DeviceConnectionStatus.connected;
+    final wasConnected = _lastConnected;
+    _lastConnected = isConnected;
+
+    if (isConnected && !wasConnected) {
+      debugPrint('DeviceManager: BLE connected — starting sync');
       _liveSessionRecorder?.setEnabled(false);
       unawaited(_startSync());
-    } else if (status == DeviceConnectionStatus.disconnected) {
+    } else if (!isConnected && wasConnected) {
+      debugPrint('DeviceManager: BLE disconnected');
       _liveSessionRecorder?.setEnabled(false);
       _teardownSync();
     }
   }
 
   Future<void> _startSync() async {
-    // Nuke any previous sync session before starting a new one. This
-    // handles the "reconnect after a drop mid-sync" path cleanly.
     await _teardownSync();
 
     final device = _btManager.deviceService.device;
     if (device == null) {
       debugPrint('DeviceManager: connected but no BluetoothDevice handle');
+      _liveSessionRecorder?.setEnabled(true);
       return;
     }
 
-    // Give the firmware a breath after the connect callback fires so the
-    // CCCD subscription on our side is fully wired before we ask for
-    // notifications. flutter_blue_plus also needs the services list to
-    // finish settling.
     await Future<void>.delayed(const Duration(milliseconds: 600));
+
+    if (_btManager.deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.connected) {
+      debugPrint('DeviceManager: disconnected during delay, aborting sync');
+      return;
+    }
 
     final sync = BleSessionSync(device);
     _activeSync = sync;
@@ -89,31 +124,38 @@ class DeviceManager {
       (p) {
         lastProgress.value = p;
         if (p.complete) {
+          debugPrint('DeviceManager: sync complete — enabling live recorder');
           isSyncing.value = false;
           syncCompletedTick.value++;
           _liveSessionRecorder?.setEnabled(true);
         }
       },
       onError: (Object e) {
-        debugPrint('DeviceManager: sync stream error: $e');
+        debugPrint('DeviceManager: sync stream error: $e — enabling live recorder');
         isSyncing.value = false;
         _liveSessionRecorder?.setEnabled(true);
       },
       onDone: () {
-        isSyncing.value = false;
+        if (isSyncing.value) {
+          debugPrint('DeviceManager: sync stream done while still syncing — enabling live recorder');
+          isSyncing.value = false;
+          _liveSessionRecorder?.setEnabled(true);
+        }
       },
     );
 
     try {
       await sync.startSync();
     } catch (e) {
-      debugPrint('DeviceManager: startSync threw: $e');
+      debugPrint('DeviceManager: startSync threw: $e — enabling live recorder');
       isSyncing.value = false;
       _liveSessionRecorder?.setEnabled(true);
     }
   }
 
   Future<void> _teardownSync() async {
+    _resyncTimer?.cancel();
+    _resyncTimer = null;
     await _progressSub?.cancel();
     _progressSub = null;
     final s = _activeSync;

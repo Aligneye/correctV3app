@@ -14,6 +14,15 @@ const _kDefaultDeviceNamePrefix = 'aligneye pod';
 
 enum DeviceConnectionStatus { disconnected, connecting, connected }
 
+/// Result of a pre-flight Bluetooth readiness check.
+enum BleReadiness {
+  ready,
+  bluetoothUnsupported,
+  bluetoothOff,
+  permissionDenied,
+  permissionPermanentlyDenied,
+}
+
 class _ScanCandidate {
   const _ScanCandidate({
     required this.device,
@@ -341,6 +350,69 @@ class AlignEyeDeviceService {
       debugPrint('Failed to send command "$payload": $e');
       return false;
     }
+  }
+
+  /// Lightweight pre-flight check.  Returns [BleReadiness.ready] when the
+  /// adapter is on and all runtime permissions have been granted.
+  /// Does NOT start a scan or connection – call [connect] afterwards.
+  Future<BleReadiness> checkReadiness() async {
+    final supported = await FlutterBluePlus.isSupported;
+    if (!supported) return BleReadiness.bluetoothUnsupported;
+
+    // Check permissions first (Android only; iOS returns true).
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final scanStatus = await Permission.bluetoothScan.status;
+      final connectStatus = await Permission.bluetoothConnect.status;
+
+      if (scanStatus.isPermanentlyDenied ||
+          connectStatus.isPermanentlyDenied) {
+        return BleReadiness.permissionPermanentlyDenied;
+      }
+
+      if (!scanStatus.isGranted) {
+        final result = await Permission.bluetoothScan.request();
+        if (result.isPermanentlyDenied) {
+          return BleReadiness.permissionPermanentlyDenied;
+        }
+        if (!result.isGranted) return BleReadiness.permissionDenied;
+      }
+
+      if (!connectStatus.isGranted) {
+        final result = await Permission.bluetoothConnect.request();
+        if (result.isPermanentlyDenied) {
+          return BleReadiness.permissionPermanentlyDenied;
+        }
+        if (!result.isGranted) return BleReadiness.permissionDenied;
+      }
+
+      if (!_isAndroid12OrAbove) {
+        final locStatus = await Permission.location.status;
+        if (locStatus.isPermanentlyDenied) {
+          return BleReadiness.permissionPermanentlyDenied;
+        }
+        if (!locStatus.isGranted) {
+          final result = await Permission.location.request();
+          if (result.isPermanentlyDenied) {
+            return BleReadiness.permissionPermanentlyDenied;
+          }
+          if (!result.isGranted) return BleReadiness.permissionDenied;
+        }
+      }
+    }
+
+    // Check adapter state.
+    try {
+      final adapterState = await FlutterBluePlus.adapterState.first.timeout(
+        const Duration(seconds: 2),
+      );
+      if (adapterState != BluetoothAdapterState.on) {
+        return BleReadiness.bluetoothOff;
+      }
+    } catch (_) {
+      return BleReadiness.bluetoothOff;
+    }
+
+    return BleReadiness.ready;
   }
 
   Future<void> connect({bool isAutoConnect = false}) async {
