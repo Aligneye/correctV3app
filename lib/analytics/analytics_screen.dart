@@ -1777,6 +1777,9 @@ class _SessionDetailBody extends StatelessWidget {
     final patternName = lastPatternIndex == null
         ? 'Unknown'
         : therapyPatternName(lastPatternIndex);
+    final patternDescription = lastPatternIndex == null
+        ? null
+        : therapyPatternDescription(lastPatternIndex);
 
     return SingleChildScrollView(
       controller: controller,
@@ -1833,6 +1836,19 @@ class _SessionDetailBody extends StatelessWidget {
                           fontWeight: FontWeight.w500,
                         ),
                       ),
+                      if (!isPosture && patternDescription != null) ...[
+                        const SizedBox(height: 5),
+                        Text(
+                          patternDescription,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white.withValues(alpha: 0.78),
+                            height: 1.25,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -2279,6 +2295,9 @@ class _TherapyPatternsCard extends StatelessWidget {
     final patternName = session.pattern == null
         ? null
         : therapyPatternName(session.pattern!);
+    final patternDescription = session.pattern == null
+        ? null
+        : therapyPatternDescription(session.pattern!);
 
     if (events.isEmpty) {
       return Container(
@@ -2291,7 +2310,7 @@ class _TherapyPatternsCard extends StatelessWidget {
             Expanded(
               child: Text(
                 session.pattern != null
-                    ? '$patternName ran for ${session.duration}.'
+                    ? '$patternName ran for ${session.duration}. ${patternDescription ?? ''}'
                     : 'No pattern data captured for this session.',
                 style: const TextStyle(
                   fontSize: 13,
@@ -2354,6 +2373,7 @@ class _TherapyPatternEventRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final startClock = _formatClockAt(sessionStart, event.startOffsetSec);
     final endClock = _formatClockAt(sessionStart, event.endOffsetSec);
+    final description = therapyPatternDescription(event.patternIndex);
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 11),
       decoration: BoxDecoration(
@@ -2395,6 +2415,15 @@ class _TherapyPatternEventRow extends StatelessWidget {
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: _kText,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  description,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: _kTextMuted,
+                    height: 1.3,
                   ),
                 ),
                 const SizedBox(height: 3),

@@ -545,6 +545,9 @@ class _SessionTile extends StatelessWidget {
     final patternName = lastPatternIndex == null
         ? 'Unknown'
         : therapyPatternName(lastPatternIndex);
+    final patternDescription = lastPatternIndex == null
+        ? null
+        : therapyPatternDescription(lastPatternIndex);
 
     return Material(
       color: _kCard,
@@ -608,6 +611,19 @@ class _SessionTile extends StatelessWidget {
                           const _CloudPendingIcon(),
                       ],
                     ),
+                    if (!isPosture && patternDescription != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        patternDescription,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: _kTextMuted,
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 4),
                     Row(
                       children: [

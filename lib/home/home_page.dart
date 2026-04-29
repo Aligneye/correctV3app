@@ -2259,6 +2259,9 @@ class _HomeSessionItem extends StatelessWidget {
     final lastPatternName = lastPatternIndex == null
         ? null
         : therapyPatternName(lastPatternIndex);
+    final lastPatternDescription = lastPatternIndex == null
+        ? null
+        : therapyPatternDescription(lastPatternIndex);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -2343,6 +2346,19 @@ class _HomeSessionItem extends StatelessWidget {
                       ),
                     ],
                   ),
+                  if (!isPosture && lastPatternDescription != null) ...[
+                    const SizedBox(height: 5),
+                    Text(
+                      lastPatternDescription,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: _kTextHint,
+                        height: 1.25,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 7),
                   Wrap(
                     spacing: 14,
