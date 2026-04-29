@@ -1500,7 +1500,7 @@ class _SessionItem extends StatelessWidget {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: isPosture
-                      ? const [Color(0xFFC084FC), Color(0xFFEC4899)]
+                      ? AppTheme.goodPostureGradient.colors
                       : const [Color(0xFF60A5FA), Color(0xFF06B6D4)],
                 ),
                 borderRadius: BorderRadius.circular(13),

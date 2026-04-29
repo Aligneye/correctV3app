@@ -24,6 +24,11 @@ class AppTheme {
     colors: [Color(0xFF60A5FA), Color(0xFF06B6D4)],
   );
 
+  // Vibration therapy session icon gradient (blue-cyan, matches recent sessions)
+  static const LinearGradient vibrationTherapyGradient = LinearGradient(
+    colors: [Color(0xFF60A5FA), Color(0xFF06B6D4)],
+  );
+
   static const LinearGradient trainingGradient = LinearGradient(
     colors: [Color(0xFFC084FC), Color(0xFFEC4899)],
   );

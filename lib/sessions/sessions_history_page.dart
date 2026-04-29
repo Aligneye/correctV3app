@@ -225,15 +225,21 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
           duration: const Duration(milliseconds: 160),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
-            color: selected ? _kBlue : Colors.white,
+            gradient: selected ? AppTheme.trainingGradient : null,
+            color: selected ? null : Colors.white,
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: selected ? _kBlue : _kBorder, width: 1),
+            border: Border.all(
+              color: selected ? Colors.transparent : _kBorder,
+              width: 1,
+            ),
             boxShadow: selected
-                ? const [
+                ? [
                     BoxShadow(
-                      color: Color(0x222F7BFF),
-                      blurRadius: 8,
-                      offset: Offset(0, 4),
+                      color: AppTheme.trainingGradient.colors.first.withValues(
+                        alpha: 0.30,
+                      ),
+                      blurRadius: 12,
+                      offset: const Offset(0, 6),
                     ),
                   ]
                 : null,
@@ -583,7 +589,7 @@ class _SessionTile extends StatelessWidget {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: isPosture
-                      ? const [Color(0xFFC084FC), Color(0xFFEC4899)]
+                      ? AppTheme.goodPostureGradient.colors
                       : const [Color(0xFF60A5FA), Color(0xFF06B6D4)],
                 ),
                 borderRadius: BorderRadius.circular(13),

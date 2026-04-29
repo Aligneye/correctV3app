@@ -239,29 +239,29 @@ class _HomeDashboardState extends State<HomeDashboard>
   int _lastSyncTick = 0;
   List<SessionData> _offlineSessions = const <SessionData>[];
 
-  static const List<_QuickMode> _quickModes = [
+  static final List<_QuickMode> _quickModes = [
     _QuickMode(
       title: 'Therapy',
       icon: Icons.graphic_eq,
-      gradient: [Color(0xFF60A5FA), Color(0xFF06B6D4)],
+      gradient: AppTheme.vibrationTherapyGradient.colors,
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Training',
       icon: Icons.accessibility_new_rounded,
-      gradient: [Color(0xFFC084FC), Color(0xFFEC4899)],
+      gradient: AppTheme.goodPostureGradient.colors,
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Walking',
       icon: Icons.directions_walk_rounded,
-      gradient: [Color(0xFFFB7185), Color(0xFFEF4444)],
+      gradient: AppTheme.alignWalkGradient.colors,
       targetIndex: 1,
     ),
     _QuickMode(
       title: 'Breathe',
       icon: Icons.self_improvement,
-      gradient: [Color(0xFF818CF8), Color(0xFF3B82F6)],
+      gradient: AppTheme.meditationGradient.colors,
       targetIndex: 1,
     ),
   ];
@@ -861,7 +861,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                           title: 'Posture training mode',
                           subtitle: 'Basic, Intermediate & Advanced levels',
                           icon: Icons.accessibility_new_rounded,
-                          gradient: AppTheme.trainingGradient,
+                          gradient: AppTheme.goodPostureGradient,
                           onTap: () {
                             Navigator.pop(sheetCtx);
                             widget.onOpenTraining();
@@ -871,8 +871,8 @@ class _HomeDashboardState extends State<HomeDashboard>
                         _AllModesSheetItem(
                           title: 'Vibration therapy mode',
                           subtitle: 'Acupressure vibration therapy',
-                          icon: Icons.favorite,
-                          gradient: AppTheme.therapyGradient,
+                          icon: Icons.graphic_eq,
+                          gradient: AppTheme.vibrationTherapyGradient,
                           onTap: () {
                             Navigator.pop(sheetCtx);
                             widget.onOpenTherapy();
@@ -985,7 +985,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                       label: 'Good posture',
                       trendText: '6% from last week',
                       icon: Icons.accessibility_new_rounded,
-                      gradient: AppTheme.trainingGradient,
+                      gradient: AppTheme.goodPostureGradient,
                       positiveTrend: true,
                     ),
                     _StatItemData(
@@ -1011,7 +1011,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                       label: 'Therapy time',
                       trendText: '8min less',
                       icon: Icons.graphic_eq,
-                      gradient: AppTheme.therapyGradient,
+                      gradient: AppTheme.vibrationTherapyGradient,
                       positiveTrend: false,
                     ),
                   ],
@@ -2125,7 +2125,12 @@ class _LiveSessionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
-    final accent = isPosture ? _kPrimaryBlue : _kPrimaryGreen;
+    final modeGradient = isPosture
+        ? AppTheme.goodPostureGradient
+        : AppTheme.vibrationTherapyGradient;
+    final accent = isPosture
+        ? AppTheme.goodPostureStart
+        : const Color(0xFF60A5FA);
     final patternName = session.pattern == null
         ? null
         : therapyPatternName(session.pattern!);
@@ -2155,7 +2160,11 @@ class _LiveSessionRow extends StatelessWidget {
                 width: 38,
                 height: 38,
                 decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.18),
+                  gradient: LinearGradient(
+                    colors: modeGradient.colors,
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(
@@ -2163,7 +2172,7 @@ class _LiveSessionRow extends StatelessWidget {
                       ? Icons.accessibility_new_rounded
                       : Icons.graphic_eq,
                   size: 19,
-                  color: accent,
+                  color: Colors.white,
                 ),
               ),
               const SizedBox(width: 11),
@@ -2293,8 +2302,8 @@ class _HomeSessionItem extends StatelessWidget {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: isPosture
-                      ? const [Color(0xFFC084FC), Color(0xFFEC4899)]
-                      : const [Color(0xFF60A5FA), Color(0xFF06B6D4)],
+                      ? AppTheme.goodPostureGradient.colors
+                      : AppTheme.vibrationTherapyGradient.colors,
                 ),
                 borderRadius: BorderRadius.circular(13),
               ),
