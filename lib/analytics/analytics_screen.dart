@@ -1888,8 +1888,10 @@ class _SessionDetailBody extends StatelessWidget {
             children: [
               _DetailStat(value: session.duration, label: 'Duration'),
               _DetailStat(
-                value: _formatDateLong(session.startTs) ?? session.date,
-                label: 'Date',
+                value: isPosture
+                    ? _formatDateTimeLong(session.startTs) ?? session.date
+                    : _formatDateLong(session.startTs) ?? session.date,
+                label: isPosture ? 'Started' : 'Date',
               ),
               if (isPosture) ...[
                 _DetailStat(
@@ -1968,6 +1970,13 @@ class _SessionDetailBody extends StatelessWidget {
     return '${months[ts.month - 1]} ${ts.day}';
   }
 
+  static String? _formatDateTimeLong(DateTime? ts) {
+    final date = _formatDateLong(ts);
+    final time = _formatStartTime(ts);
+    if (date == null || time == null) return null;
+    return '$time, $date';
+  }
+
   static String? _formatStartTime(DateTime? ts) {
     if (ts == null) return null;
     final hour = ts.hour == 0 ? 12 : (ts.hour > 12 ? ts.hour - 12 : ts.hour);
@@ -2028,7 +2037,8 @@ class _PostureTimelineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final events = session.postureEvents ?? const <PostureEvent>[];
+    final events = _postureEventsForSession(session);
+    final hasExactEvents = session.postureEvents?.isNotEmpty ?? false;
     final durationSec = session.durationSec.clamp(1, 1 << 30).toInt();
 
     return Container(
@@ -2084,7 +2094,13 @@ class _PostureTimelineCard extends StatelessWidget {
               ),
             ],
           ),
-          if (events.isEmpty) ...[
+          if (!hasExactEvents && events.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Text(
+              'Timeline estimated from the saved slouch summary.',
+              style: TextStyle(fontSize: 12, color: _kTextMuted, height: 1.4),
+            ),
+          ] else if (events.isEmpty) ...[
             const SizedBox(height: 14),
             const Text(
               'No slouch events recorded — your posture stayed within range '
@@ -2146,7 +2162,8 @@ class _PostureEventsList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final events = session.postureEvents ?? const <PostureEvent>[];
+    final events = _postureEventsForSession(session);
+    final hasExactEvents = session.postureEvents?.isNotEmpty ?? false;
 
     if (events.isEmpty) {
       return Container(
@@ -2180,6 +2197,7 @@ class _PostureEventsList extends StatelessWidget {
             _PostureEventRow(
               index: i + 1,
               event: events[i],
+              isEstimated: !hasExactEvents,
               isLast: i == events.length - 1,
             ),
         ],
@@ -2188,13 +2206,43 @@ class _PostureEventsList extends StatelessWidget {
   }
 }
 
+List<PostureEvent> _postureEventsForSession(SessionData session) {
+  final exact = session.postureEvents;
+  if (exact != null && exact.isNotEmpty) return exact;
+
+  final count = session.alerts ?? 0;
+  final totalBad = session.wrongDurSec ?? 0;
+  final duration = session.durationSec;
+  if (count <= 0 || duration <= 0) return const <PostureEvent>[];
+
+  final badPerEvent = (totalBad / count).ceil().clamp(1, duration).toInt();
+  final spacing = (duration / (count + 1)).floor().clamp(1, duration).toInt();
+  final events = <PostureEvent>[];
+
+  for (var i = 0; i < count; i++) {
+    final preferredStart = spacing * (i + 1);
+    final latestStart = (duration - badPerEvent).clamp(0, duration).toInt();
+    final slouchSec = preferredStart.clamp(0, latestStart).toInt();
+    final correctionSec = (slouchSec + badPerEvent)
+        .clamp(slouchSec, duration)
+        .toInt();
+    events.add(
+      PostureEvent(slouchSec: slouchSec, correctionSec: correctionSec),
+    );
+  }
+
+  return events;
+}
+
 class _PostureEventRow extends StatelessWidget {
   final int index;
   final PostureEvent event;
+  final bool isEstimated;
   final bool isLast;
   const _PostureEventRow({
     required this.index,
     required this.event,
+    this.isEstimated = false,
     required this.isLast,
   });
 
@@ -2240,7 +2288,9 @@ class _PostureEventRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  corrected
+                  isEstimated
+                      ? 'Estimated slouch ${_formatMinSec(event.slouchSec)} → ${_formatMinSec(event.correctionSec)}'
+                      : corrected
                       ? 'Slouched at ${_formatMinSec(event.slouchSec)} → corrected at ${_formatMinSec(event.correctionSec)}'
                       : 'Slouched at ${_formatMinSec(event.slouchSec)} (still bad at end)',
                   style: const TextStyle(
