@@ -23,7 +23,7 @@ class SessionDatabase {
     final path = join(dbPath, 'aligneye_sessions.db');
     _db = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE sessions (
@@ -38,6 +38,7 @@ class SessionDatabase {
             ts_synced       INTEGER NOT NULL DEFAULT 0,
             posture_events  TEXT,
             therapy_patterns TEXT,
+            therapy_pattern_events TEXT,
             created_at      TEXT NOT NULL,
             sync_status     INTEGER NOT NULL DEFAULT 0,
             remote_id       TEXT
@@ -46,6 +47,13 @@ class SessionDatabase {
         await db.execute(
           'CREATE INDEX idx_sessions_user_start ON sessions (user_id, start_ts DESC)',
         );
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute(
+            'ALTER TABLE sessions ADD COLUMN therapy_pattern_events TEXT',
+          );
+        }
       },
     );
   }
@@ -80,6 +88,7 @@ class SessionDatabase {
       'ts_synced': (row['ts_synced'] == true || row['ts_synced'] == 1) ? 1 : 0,
       'posture_events': _encodeJson(row['posture_events']),
       'therapy_patterns': _encodeJson(row['therapy_patterns']),
+      'therapy_pattern_events': _encodeJson(row['therapy_pattern_events']),
       'created_at': row['created_at'] as String? ?? now,
       'sync_status': row['sync_status'] as int? ?? 0,
       'remote_id': row['remote_id'] as String?,
@@ -111,6 +120,11 @@ class SessionDatabase {
     }
     if (fields.containsKey('therapy_patterns')) {
       update['therapy_patterns'] = _encodeJson(fields['therapy_patterns']);
+    }
+    if (fields.containsKey('therapy_pattern_events')) {
+      update['therapy_pattern_events'] = _encodeJson(
+        fields['therapy_pattern_events'],
+      );
     }
     if (update.isEmpty) return;
     // Mark as dirty unless explicitly set.
@@ -155,26 +169,9 @@ class SessionDatabase {
     );
     if (byRemote.isNotEmpty) {
       final localId = byRemote.first['id'] as String;
-      await db.update('sessions', {
-        'duration_sec': remoteRow['duration_sec'],
-        'wrong_count': remoteRow['wrong_count'],
-        'wrong_dur_sec': remoteRow['wrong_dur_sec'],
-        'therapy_pattern': remoteRow['therapy_pattern'],
-        'ts_synced': (remoteRow['ts_synced'] == true) ? 1 : 0,
-        'posture_events': _encodeJson(remoteRow['posture_events']),
-        'therapy_patterns': _encodeJson(remoteRow['therapy_patterns']),
-        'sync_status': 1,
-      }, where: 'id = ?', whereArgs: [localId]);
-      return;
-    }
-
-    // Check by dedupe window.
-    if (startTs.isNotEmpty) {
-      final existing = await findExistingByStartTs(
-        userId, type, DateTime.parse(startTs), const Duration(seconds: 10),
-      );
-      if (existing != null) {
-        await db.update('sessions', {
+      await db.update(
+        'sessions',
+        {
           'duration_sec': remoteRow['duration_sec'],
           'wrong_count': remoteRow['wrong_count'],
           'wrong_dur_sec': remoteRow['wrong_dur_sec'],
@@ -182,9 +179,45 @@ class SessionDatabase {
           'ts_synced': (remoteRow['ts_synced'] == true) ? 1 : 0,
           'posture_events': _encodeJson(remoteRow['posture_events']),
           'therapy_patterns': _encodeJson(remoteRow['therapy_patterns']),
+          'therapy_pattern_events': _encodeJson(
+            remoteRow['therapy_pattern_events'],
+          ),
           'sync_status': 1,
-          'remote_id': remoteId,
-        }, where: 'id = ?', whereArgs: [existing]);
+        },
+        where: 'id = ?',
+        whereArgs: [localId],
+      );
+      return;
+    }
+
+    // Check by dedupe window.
+    if (startTs.isNotEmpty) {
+      final existing = await findExistingByStartTs(
+        userId,
+        type,
+        DateTime.parse(startTs),
+        const Duration(seconds: 10),
+      );
+      if (existing != null) {
+        await db.update(
+          'sessions',
+          {
+            'duration_sec': remoteRow['duration_sec'],
+            'wrong_count': remoteRow['wrong_count'],
+            'wrong_dur_sec': remoteRow['wrong_dur_sec'],
+            'therapy_pattern': remoteRow['therapy_pattern'],
+            'ts_synced': (remoteRow['ts_synced'] == true) ? 1 : 0,
+            'posture_events': _encodeJson(remoteRow['posture_events']),
+            'therapy_patterns': _encodeJson(remoteRow['therapy_patterns']),
+            'therapy_pattern_events': _encodeJson(
+              remoteRow['therapy_pattern_events'],
+            ),
+            'sync_status': 1,
+            'remote_id': remoteId,
+          },
+          where: 'id = ?',
+          whereArgs: [existing],
+        );
         return;
       }
     }
@@ -202,6 +235,7 @@ class SessionDatabase {
       'ts_synced': remoteRow['ts_synced'],
       'posture_events': remoteRow['posture_events'],
       'therapy_patterns': remoteRow['therapy_patterns'],
+      'therapy_pattern_events': remoteRow['therapy_pattern_events'],
       'created_at': remoteRow['created_at']?.toString(),
       'sync_status': 1,
       'remote_id': remoteId,
@@ -237,7 +271,9 @@ class SessionDatabase {
     String? typeFilter,
   }) async {
     final db = await database;
-    final where = StringBuffer('user_id = ? AND start_ts >= ? AND start_ts < ?');
+    final where = StringBuffer(
+      'user_id = ? AND start_ts >= ? AND start_ts < ?',
+    );
     final args = <dynamic>[
       userId,
       start.toUtc().toIso8601String(),
@@ -312,10 +348,20 @@ class SessionDatabase {
     }
     if (row['therapy_patterns'] is String) {
       try {
-        result['therapy_patterns'] =
-            jsonDecode(row['therapy_patterns'] as String);
+        result['therapy_patterns'] = jsonDecode(
+          row['therapy_patterns'] as String,
+        );
       } catch (_) {
         result['therapy_patterns'] = null;
+      }
+    }
+    if (row['therapy_pattern_events'] is String) {
+      try {
+        result['therapy_pattern_events'] = jsonDecode(
+          row['therapy_pattern_events'] as String,
+        );
+      } catch (_) {
+        result['therapy_pattern_events'] = null;
       }
     }
     return result;

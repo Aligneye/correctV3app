@@ -119,8 +119,9 @@ class SessionRepository {
           .select()
           .order('start_ts', ascending: false);
       for (final row in (rows as List<dynamic>)) {
-        await SessionDatabase.instance
-            .upsertFromRemote(row as Map<String, dynamic>);
+        await SessionDatabase.instance.upsertFromRemote(
+          row as Map<String, dynamic>,
+        );
       }
       debugPrint('SessionRepository: cache warmed with ${rows.length} rows');
     } catch (e) {
@@ -190,9 +191,7 @@ class SessionRepository {
     if (startTs == null && durationSec == 0) return null;
     final wrongDurSec = isPosture ? _asInt(row['wrong_dur_sec']) : null;
 
-    final score = isPosture
-        ? _scoreFrom(durationSec, wrongDurSec ?? 0)
-        : null;
+    final score = isPosture ? _scoreFrom(durationSec, wrongDurSec ?? 0) : null;
 
     final pattern = isPosture ? null : _asIntOrNull(row['therapy_pattern']);
     final alerts = isPosture ? _asIntOrNull(row['wrong_count']) : null;
@@ -207,6 +206,14 @@ class SessionRepository {
     final therapyPatterns = isPosture
         ? null
         : _parseTherapyPatterns(row['therapy_patterns']);
+    final therapyPatternEvents = isPosture
+        ? null
+        : _parseTherapyPatternEvents(
+            row['therapy_pattern_events'],
+            therapyPatterns,
+            pattern,
+            durationSec,
+          );
 
     return SessionData(
       id: index,
@@ -227,6 +234,7 @@ class SessionRepository {
       startTs: startTs,
       postureEvents: postureEvents,
       therapyPatterns: therapyPatterns,
+      therapyPatternEvents: therapyPatternEvents,
     );
   }
 
@@ -253,6 +261,63 @@ class SessionRepository {
       }
     }
     return out.isEmpty ? null : out;
+  }
+
+  List<TherapyPatternEvent>? _parseTherapyPatternEvents(
+    dynamic raw,
+    List<int>? fallbackPatterns,
+    int? singlePattern,
+    int durationSec,
+  ) {
+    if (raw is List) {
+      final out = <TherapyPatternEvent>[];
+      for (final entry in raw) {
+        if (entry is Map) {
+          final event = TherapyPatternEvent.fromJson(
+            entry.cast<String, dynamic>(),
+          );
+          if (event.patternIndex > 0) out.add(event);
+        }
+      }
+      if (out.isNotEmpty) {
+        out.sort((a, b) => a.startOffsetSec.compareTo(b.startOffsetSec));
+        return out;
+      }
+    }
+
+    final patterns =
+        fallbackPatterns ??
+        (singlePattern == null ? null : <int>[singlePattern]);
+    if (patterns == null || patterns.isEmpty) return null;
+
+    final safeDuration = durationSec.clamp(0, 1 << 30).toInt();
+    if (safeDuration <= 0) {
+      return [
+        for (var i = 0; i < patterns.length; i++)
+          TherapyPatternEvent(
+            patternIndex: patterns[i],
+            startOffsetSec: 0,
+            durationSec: 0,
+          ),
+      ];
+    }
+
+    final base = safeDuration ~/ patterns.length;
+    final remainder = safeDuration % patterns.length;
+    var cursor = 0;
+    return [
+      for (var i = 0; i < patterns.length; i++)
+        () {
+          final dur = base + (i < remainder ? 1 : 0);
+          final event = TherapyPatternEvent(
+            patternIndex: patterns[i],
+            startOffsetSec: cursor,
+            durationSec: dur,
+          );
+          cursor += dur;
+          return event;
+        }(),
+    ];
   }
 
   int _scoreFrom(int durationSec, int wrongDurSec) {
@@ -313,16 +378,29 @@ class SessionRepository {
   }
 
   String _formatDuration(int durationSec) {
+    if (durationSec <= 0) return '0s';
     if (durationSec < 60) return '${durationSec}s';
-    final minutes = (durationSec / 60).round();
-    return '$minutes min';
+    final minutes = durationSec ~/ 60;
+    final seconds = durationSec % 60;
+    if (seconds == 0) return '$minutes min';
+    return '$minutes min ${seconds}s';
   }
 
   String _formatShortDate(DateTime? ts) {
     if (ts == null) return '—';
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${months[ts.month - 1]} ${ts.day}';
   }

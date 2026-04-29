@@ -11,6 +11,8 @@
 --   was corrected. `c == 65535` means the slouch was still active when the
 --   session ended.
 -- therapy_patterns: jsonb array of integer pattern indices played (in order).
+-- therapy_pattern_events: jsonb array of {p,s,d}, where `p` is the pattern
+--   index, `s` is seconds-from-session-start, and `d` is duration seconds.
 
 create table sessions (
   id               uuid primary key default gen_random_uuid(),
@@ -24,6 +26,7 @@ create table sessions (
   ts_synced        boolean default false,
   posture_events   jsonb,
   therapy_patterns jsonb,
+  therapy_pattern_events jsonb,
   created_at       timestamptz default now()
 );
 

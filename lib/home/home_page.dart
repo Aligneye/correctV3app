@@ -1153,12 +1153,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                             ),
                           ),
                           onSessionTap: (session) =>
-                              Navigator.of(context).push<void>(
-                                MaterialPageRoute<void>(
-                                  builder: (_) =>
-                                      SessionDetailScreen(session: session),
-                                ),
-                              ),
+                              showSessionDetailSheet(context, session: session),
                           onSyncNow: () => unawaited(_handleSyncNow()),
                         );
                       },
@@ -1193,8 +1188,10 @@ class _HomeDashboardState extends State<HomeDashboard>
       setState(() => _syncBannerDismissed = true);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Bluetooth connection cancelled. '
-              'Tap the connect button when ready.'),
+          content: Text(
+            'Bluetooth connection cancelled. '
+            'Tap the connect button when ready.',
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       );

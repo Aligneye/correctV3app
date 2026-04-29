@@ -78,6 +78,7 @@ class SessionSyncService {
         'ts_synced': row['ts_synced'] == true || row['ts_synced'] == 1,
         'posture_events': row['posture_events'],
         'therapy_patterns': row['therapy_patterns'],
+        'therapy_pattern_events': row['therapy_pattern_events'],
       };
 
       try {

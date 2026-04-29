@@ -123,11 +123,19 @@ class LiveSessionRecorder {
     final initialPattern = type == 'therapy'
         ? _patternIndexFrom(reading.therapyPattern)
         : null;
+    final initialPatternEvents = type == 'therapy' && initialPattern != null
+        ? <Map<String, int>>[
+            {'p': initialPattern, 's': 0, 'd': initialDurationSec},
+          ]
+        : null;
 
     try {
       final db = SessionDatabase.instance;
       final existingId = await db.findExistingByStartTs(
-        user.id, type, startAt, const Duration(seconds: 10),
+        user.id,
+        type,
+        startAt,
+        const Duration(seconds: 10),
       );
 
       String id;
@@ -143,6 +151,7 @@ class LiveSessionRecorder {
           'therapy_patterns': type == 'therapy' && initialPattern != null
               ? <int>[initialPattern]
               : null,
+          'therapy_pattern_events': initialPatternEvents,
         });
         debugPrint(
           'LiveSessionRecorder: reusing existing $type session id=$id',
@@ -161,17 +170,19 @@ class LiveSessionRecorder {
           'therapy_patterns': type == 'therapy' && initialPattern != null
               ? <int>[initialPattern]
               : null,
+          'therapy_pattern_events': initialPatternEvents,
           'sync_status': 0,
         });
-        debugPrint(
-          'LiveSessionRecorder: inserted new $type session id=$id',
-        );
+        debugPrint('LiveSessionRecorder: inserted new $type session id=$id');
       }
 
       _active = _LiveSession(id: id, type: type, startedAt: startAt)
         ..wrongCount = type == 'posture' ? reading.liveSessionBadCount : 0
         ..therapyPattern = initialPattern
-        ..therapyPatternSequence = initialPattern != null ? [initialPattern] : [];
+        ..therapyPatternSequence = initialPattern != null
+            ? [initialPattern]
+            : []
+        ..therapyPatternEvents = initialPatternEvents ?? <Map<String, int>>[];
       _activeSessionId.value = id;
       _lastBadPosture = type == 'posture' && reading.isBadPosture;
       _badPostureStartedAt = _lastBadPosture ? now : null;
@@ -242,10 +253,27 @@ class LiveSessionRecorder {
     if (active.type == 'therapy') {
       final pattern = _patternIndexFrom(reading.therapyPattern);
       if (pattern != null) {
+        final elapsedSec = _durationFrom(
+          reading,
+          active.startedAt,
+          DateTime.now(),
+        );
         active.therapyPattern = pattern;
         final seq = active.therapyPatternSequence;
         if (seq.isEmpty || seq.last != pattern) {
+          if (active.therapyPatternEvents.isNotEmpty) {
+            final previous = active.therapyPatternEvents.last;
+            final previousStart = previous['s'] ?? 0;
+            previous['d'] = (elapsedSec - previousStart)
+                .clamp(0, 1 << 30)
+                .toInt();
+          }
           seq.add(pattern);
+          active.therapyPatternEvents.add({
+            'p': pattern,
+            's': elapsedSec,
+            'd': 0,
+          });
         }
       }
       return;
@@ -306,6 +334,9 @@ class LiveSessionRecorder {
             .inSeconds
             .clamp(1, 1 << 30)
             .toInt();
+        final therapyPatternEvents = active.type == 'therapy'
+            ? _closedTherapyPatternEvents(active, durationSec)
+            : null;
         final wrongDurationSec =
             active.wrongDurationSec +
             (_badPostureStartedAt == null
@@ -317,12 +348,8 @@ class LiveSessionRecorder {
                       .toInt());
         await SessionDatabase.instance.updateSession(active.id, {
           'duration_sec': durationSec,
-          'wrong_count': active.type == 'posture'
-              ? active.wrongCount
-              : null,
-          'wrong_dur_sec': active.type == 'posture'
-              ? wrongDurationSec
-              : null,
+          'wrong_count': active.type == 'posture' ? active.wrongCount : null,
+          'wrong_dur_sec': active.type == 'posture' ? wrongDurationSec : null,
           'therapy_pattern': active.type == 'therapy'
               ? active.therapyPattern
               : null,
@@ -330,8 +357,13 @@ class LiveSessionRecorder {
               ? active.postureEvents
               : null,
           'therapy_patterns':
-              active.type == 'therapy' && active.therapyPatternSequence.isNotEmpty
+              active.type == 'therapy' &&
+                  active.therapyPatternSequence.isNotEmpty
               ? active.therapyPatternSequence
+              : null,
+          'therapy_pattern_events':
+              active.type == 'therapy' && therapyPatternEvents != null
+              ? therapyPatternEvents
               : null,
         });
         _lastUpdateAt = now;
@@ -399,6 +431,20 @@ class LiveSessionRecorder {
     }
     return null;
   }
+
+  List<Map<String, int>>? _closedTherapyPatternEvents(
+    _LiveSession active,
+    int durationSec,
+  ) {
+    if (active.therapyPatternEvents.isEmpty) return null;
+    final events = active.therapyPatternEvents
+        .map((event) => Map<String, int>.from(event))
+        .toList(growable: false);
+    final last = events.last;
+    final lastStart = last['s'] ?? 0;
+    last['d'] = (durationSec - lastStart).clamp(0, 1 << 30).toInt();
+    return events;
+  }
 }
 
 class _LiveSession {
@@ -414,4 +460,5 @@ class _LiveSession {
   final List<Map<String, int>> postureEvents = <Map<String, int>>[];
   int? pendingSlouchOffsetSec;
   List<int> therapyPatternSequence = <int>[];
+  List<Map<String, int>> therapyPatternEvents = <Map<String, int>>[];
 }

@@ -73,6 +73,24 @@ class _PendingSession {
   final List<Map<String, int>> postureEvents = <Map<String, int>>[];
   final List<int> therapyPatterns = <int>[];
 
+  List<Map<String, int>> therapyPatternEvents() {
+    final patterns = therapyPatterns.isNotEmpty
+        ? therapyPatterns
+        : (therapyPattern > 0 ? <int>[therapyPattern] : const <int>[]);
+    if (patterns.isEmpty) return const <Map<String, int>>[];
+
+    final base = durationSec ~/ patterns.length;
+    final remainder = durationSec % patterns.length;
+    var cursor = 0;
+    final events = <Map<String, int>>[];
+    for (var i = 0; i < patterns.length; i++) {
+      final dur = base + (i < remainder ? 1 : 0);
+      events.add({'p': patterns[i], 's': cursor, 'd': dur});
+      cursor += dur;
+    }
+    return events;
+  }
+
   bool get hasExtensions => expectedExtPackets > 0;
   bool get extensionsComplete => receivedExtPackets >= expectedExtPackets;
 }
@@ -405,6 +423,9 @@ class BleSessionSync {
       'therapy_patterns':
           pending.type == 'therapy' && pending.therapyPatterns.isNotEmpty
           ? pending.therapyPatterns
+          : null,
+      'therapy_pattern_events': pending.type == 'therapy'
+          ? pending.therapyPatternEvents()
           : null,
     };
 

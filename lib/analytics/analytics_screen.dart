@@ -36,6 +36,44 @@ class PostureEvent {
   );
 }
 
+class TherapyPatternEvent {
+  final int patternIndex;
+  final int startOffsetSec;
+  final int durationSec;
+
+  const TherapyPatternEvent({
+    required this.patternIndex,
+    required this.startOffsetSec,
+    required this.durationSec,
+  });
+
+  int get endOffsetSec => startOffsetSec + durationSec;
+
+  Map<String, dynamic> toJson() => {
+    'p': patternIndex,
+    's': startOffsetSec,
+    'd': durationSec,
+  };
+
+  factory TherapyPatternEvent.fromJson(Map<String, dynamic> json) {
+    int readInt(List<String> keys) {
+      for (final key in keys) {
+        final value = json[key];
+        if (value is num) return value.toInt();
+        final parsed = int.tryParse(value?.toString() ?? '');
+        if (parsed != null) return parsed;
+      }
+      return 0;
+    }
+
+    return TherapyPatternEvent(
+      patternIndex: readInt(['p', 'pattern', 'pattern_index']),
+      startOffsetSec: readInt(['s', 'start', 'start_sec', 'offset_sec']),
+      durationSec: readInt(['d', 'duration', 'duration_sec']),
+    );
+  }
+}
+
 class SessionData {
   final int id;
   final String? dbId;
@@ -55,6 +93,7 @@ class SessionData {
   final DateTime? startTs;
   final List<PostureEvent>? postureEvents;
   final List<int>? therapyPatterns;
+  final List<TherapyPatternEvent>? therapyPatternEvents;
 
   const SessionData({
     required this.id,
@@ -75,6 +114,7 @@ class SessionData {
     this.startTs,
     this.postureEvents,
     this.therapyPatterns,
+    this.therapyPatternEvents,
   });
 }
 
@@ -988,11 +1028,7 @@ class _AngleDeviationDayCard extends StatelessWidget {
                 child: Stack(
                   clipBehavior: Clip.none,
                   children: [
-                    Positioned(
-                      top: 0,
-                      right: 4,
-                      child: _angleYLabel('100'),
-                    ),
+                    Positioned(top: 0, right: 4, child: _angleYLabel('100')),
                     Positioned(
                       top: _plotHeight * 0.5 - 7,
                       right: 4,
@@ -1098,10 +1134,7 @@ class _AngleDeviationDayCard extends StatelessWidget {
 }
 
 class _AngleDeviationDayPainter extends CustomPainter {
-  _AngleDeviationDayPainter({
-    required this.values,
-    required this.lineColor,
-  });
+  _AngleDeviationDayPainter({required this.values, required this.lineColor});
 
   final List<double> values;
   final Color lineColor;
@@ -1469,9 +1502,7 @@ class _SessionItem extends StatelessWidget {
                 borderRadius: BorderRadius.circular(13),
               ),
               child: Icon(
-                isPosture
-                    ? Icons.accessibility_new_rounded
-                    : Icons.graphic_eq,
+                isPosture ? Icons.accessibility_new_rounded : Icons.graphic_eq,
                 color: Colors.white,
                 size: 22,
               ),
@@ -1502,10 +1533,7 @@ class _SessionItem extends StatelessWidget {
                       const SizedBox(width: 8),
                       Text(
                         session.time,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: _kTextHint,
-                        ),
+                        style: const TextStyle(fontSize: 10, color: _kTextHint),
                       ),
                     ],
                   ),
@@ -1543,8 +1571,7 @@ class _SessionItem extends StatelessWidget {
                       child: LinearProgressIndicator(
                         value: session.score! / 100,
                         backgroundColor: const Color(0xFFEEEEF8),
-                        valueColor:
-                            const AlwaysStoppedAnimation<Color>(_kBlue),
+                        valueColor: const AlwaysStoppedAnimation<Color>(_kBlue),
                         minHeight: 3.5,
                       ),
                     ),
@@ -1617,7 +1644,6 @@ class SessionDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
-    final accent = isPosture ? _kBlue : _kGreen;
     return Scaffold(
       backgroundColor: _kBg,
       appBar: AppBar(
@@ -1646,137 +1672,228 @@ class SessionDetailScreen extends StatelessWidget {
           child: Container(height: 0.5, color: _kBorder),
         ),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 40),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Hero card
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 22),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: isPosture
-                      ? const [Color(0xFF2F7BFF), Color(0xFF08B4CB)]
-                      : const [Color(0xFF22C55E), Color(0xFF0EA5E9)],
-                ),
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x2A0EA5E9),
-                    blurRadius: 18,
-                    offset: Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          isPosture
-                              ? '${session.score ?? 0}%'
-                              : '#${session.pattern ?? 0}',
-                          style: const TextStyle(
-                            fontSize: 56,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                            height: 1,
-                            letterSpacing: -1.5,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          isPosture
-                              ? 'Good posture score'
-                              : 'Last vibration pattern',
-                          style: TextStyle(
-                            fontSize: 13.5,
-                            color: Colors.white.withValues(alpha: 0.85),
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(
-                      isPosture
-                          ? Icons.accessibility_new_rounded
-                          : Icons.graphic_eq,
-                      size: 30,
-                      color: Colors.white,
-                    ),
-                  ),
-                ],
-              ),
+      body: _SessionDetailBody(session: session),
+    );
+  }
+}
+
+Future<void> showSessionDetailSheet(
+  BuildContext context, {
+  required SessionData session,
+}) {
+  final isPosture = session.type == SessionType.posture;
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (sheetContext) {
+      return DraggableScrollableSheet(
+        initialChildSize: 0.86,
+        minChildSize: 0.45,
+        maxChildSize: 0.94,
+        builder: (_, scrollController) {
+          return Container(
+            decoration: const BoxDecoration(
+              color: _kBg,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
             ),
-
-            if (!session.tsSynced) ...[
-              const SizedBox(height: 12),
-              _UnsyncedBanner(),
-            ],
-
-            const SizedBox(height: 14),
-            _label('Session details'),
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-              childAspectRatio: 2.4,
+            child: Column(
               children: [
-                _DetailStat(value: session.duration, label: 'Duration'),
-                _DetailStat(
-                  value: _formatDateLong(session.startTs) ?? session.date,
-                  label: 'Date',
+                const SizedBox(height: 10),
+                Container(
+                  width: 42,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Color(0xFFD8DDE8),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
                 ),
-                if (isPosture) ...[
-                  _DetailStat(
-                    value: '${session.alerts ?? 0}×',
-                    label: 'Vibration alerts',
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 14, 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          isPosture ? 'Posture session' : 'Therapy session',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: _kText,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        icon: const Icon(Icons.close_rounded),
+                        color: _kTextMuted,
+                        tooltip: 'Close',
+                      ),
+                    ],
                   ),
-                  _DetailStat(
-                    value: _formatBadDuration(session),
-                    label: 'Bad posture',
+                ),
+                Expanded(
+                  child: _SessionDetailBody(
+                    session: session,
+                    controller: scrollController,
+                    bottomPadding: 28,
                   ),
-                ] else ...[
-                  _DetailStat(
-                    value: '${(session.therapyPatterns?.length ?? 0)}',
-                    label: 'Patterns played',
-                  ),
-                  _DetailStat(
-                    value: _formatStartTime(session.startTs) ?? '—',
-                    label: 'Started',
-                  ),
-                ],
+                ),
               ],
             ),
+          );
+        },
+      );
+    },
+  );
+}
 
-            if (isPosture) ...[
-              _label('Session timeline'),
-              _PostureTimelineCard(session: session),
-              _label('Slouch events'),
-              _PostureEventsList(session: session),
-            ] else ...[
-              _label('Patterns played'),
-              _TherapyPatternsCard(session: session, accent: accent),
-            ],
+class _SessionDetailBody extends StatelessWidget {
+  final SessionData session;
+  final ScrollController? controller;
+  final double bottomPadding;
+
+  const _SessionDetailBody({
+    required this.session,
+    this.controller,
+    this.bottomPadding = 40,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isPosture = session.type == SessionType.posture;
+    final accent = isPosture ? _kBlue : _kGreen;
+
+    return SingleChildScrollView(
+      controller: controller,
+      padding: EdgeInsets.fromLTRB(14, 14, 14, bottomPadding),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Hero card
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 22),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: isPosture
+                    ? const [Color(0xFF2F7BFF), Color(0xFF08B4CB)]
+                    : const [Color(0xFF22C55E), Color(0xFF0EA5E9)],
+              ),
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x2A0EA5E9),
+                  blurRadius: 18,
+                  offset: Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isPosture
+                            ? '${session.score ?? 0}%'
+                            : '#${session.pattern ?? 0}',
+                        style: const TextStyle(
+                          fontSize: 56,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                          height: 1,
+                          letterSpacing: -1.5,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        isPosture
+                            ? 'Good posture score'
+                            : 'Last vibration pattern',
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          color: Colors.white.withValues(alpha: 0.85),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(
+                    isPosture
+                        ? Icons.accessibility_new_rounded
+                        : Icons.graphic_eq,
+                    size: 30,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          if (!session.tsSynced) ...[
+            const SizedBox(height: 12),
+            _UnsyncedBanner(),
           ],
-        ),
+
+          const SizedBox(height: 14),
+          _label('Session details'),
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 2.4,
+            children: [
+              _DetailStat(value: session.duration, label: 'Duration'),
+              _DetailStat(
+                value: _formatDateLong(session.startTs) ?? session.date,
+                label: 'Date',
+              ),
+              if (isPosture) ...[
+                _DetailStat(
+                  value: '${session.alerts ?? 0}×',
+                  label: 'Vibration alerts',
+                ),
+                _DetailStat(
+                  value: _formatBadDuration(session),
+                  label: 'Bad posture',
+                ),
+              ] else ...[
+                _DetailStat(
+                  value: '${_therapyPatternCount(session)}',
+                  label: 'Patterns played',
+                ),
+                _DetailStat(
+                  value: _formatStartTime(session.startTs) ?? '—',
+                  label: 'Started',
+                ),
+              ],
+            ],
+          ),
+
+          if (isPosture) ...[
+            _label('Session timeline'),
+            _PostureTimelineCard(session: session),
+            _label('Slouch events'),
+            _PostureEventsList(session: session),
+          ] else ...[
+            _label('Patterns played'),
+            _TherapyPatternsCard(session: session, accent: accent),
+          ],
+        ],
       ),
     );
   }
@@ -1828,6 +1945,14 @@ class SessionDetailScreen extends StatelessWidget {
     final minute = ts.minute.toString().padLeft(2, '0');
     final ampm = ts.hour >= 12 ? 'PM' : 'AM';
     return '$hour:$minute $ampm';
+  }
+
+  static int _therapyPatternCount(SessionData session) {
+    final eventCount = session.therapyPatternEvents?.length ?? 0;
+    if (eventCount > 0) return eventCount;
+    final patternCount = session.therapyPatterns?.length ?? 0;
+    if (patternCount > 0) return patternCount;
+    return session.pattern == null ? 0 : 1;
   }
 }
 
@@ -1935,11 +2060,7 @@ class _PostureTimelineCard extends StatelessWidget {
             const Text(
               'No slouch events recorded — your posture stayed within range '
               'the entire session.',
-              style: TextStyle(
-                fontSize: 12,
-                color: _kTextMuted,
-                height: 1.4,
-              ),
+              style: TextStyle(fontSize: 12, color: _kTextMuted, height: 1.4),
             ),
           ],
         ],
@@ -2104,10 +2225,7 @@ class _PostureEventRow extends StatelessWidget {
                   corrected
                       ? 'Bad posture for ${_formatMinSec(dur)}'
                       : 'Open-ended slouch',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: _kTextMuted,
-                  ),
+                  style: const TextStyle(fontSize: 11, color: _kTextMuted),
                 ),
               ],
             ),
@@ -2143,9 +2261,10 @@ class _TherapyPatternsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final patterns = session.therapyPatterns ?? const <int>[];
+    final events =
+        session.therapyPatternEvents ?? const <TherapyPatternEvent>[];
 
-    if (patterns.isEmpty) {
+    if (events.isEmpty) {
       return Container(
         padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
         decoration: _cardDecoration(),
@@ -2171,13 +2290,13 @@ class _TherapyPatternsCard extends StatelessWidget {
     }
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       decoration: _cardDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${patterns.length} pattern${patterns.length == 1 ? '' : 's'} '
+            '${events.length} pattern${events.length == 1 ? '' : 's'} '
             'in this ${session.duration} session',
             style: const TextStyle(
               fontSize: 12.5,
@@ -2186,51 +2305,59 @@ class _TherapyPatternsCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (var i = 0; i < patterns.length; i++)
-                _TherapyPatternChip(
-                  step: i + 1,
-                  patternIndex: patterns[i],
-                  accent: accent,
-                ),
-            ],
-          ),
+          for (var i = 0; i < events.length; i++)
+            _TherapyPatternEventRow(
+              step: i + 1,
+              event: events[i],
+              sessionStart: session.startTs,
+              accent: accent,
+              isLast: i == events.length - 1,
+            ),
         ],
       ),
     );
   }
 }
 
-class _TherapyPatternChip extends StatelessWidget {
+class _TherapyPatternEventRow extends StatelessWidget {
   final int step;
-  final int patternIndex;
+  final TherapyPatternEvent event;
+  final DateTime? sessionStart;
   final Color accent;
-  const _TherapyPatternChip({
+  final bool isLast;
+
+  const _TherapyPatternEventRow({
     required this.step,
-    required this.patternIndex,
+    required this.event,
+    required this.sessionStart,
     required this.accent,
+    required this.isLast,
   });
 
   @override
   Widget build(BuildContext context) {
+    final startClock = _formatClockAt(sessionStart, event.startOffsetSec);
+    final endClock = _formatClockAt(sessionStart, event.endOffsetSec);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      padding: const EdgeInsets.symmetric(vertical: 11),
       decoration: BoxDecoration(
-        color: accent.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: accent.withValues(alpha: 0.20)),
+        border: Border(
+          bottom: BorderSide(
+            color: isLast ? Colors.transparent : _kBorder,
+            width: 0.5,
+          ),
+        ),
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
               color: accent.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(999),
+              borderRadius: BorderRadius.circular(10),
             ),
             child: Text(
               '$step',
@@ -2241,18 +2368,63 @@ class _TherapyPatternChip extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 6),
-          Text(
-            '#$patternIndex',
-            style: const TextStyle(
-              fontSize: 12.5,
-              fontWeight: FontWeight.w600,
-              color: _kText,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Pattern #${event.patternIndex}',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: _kText,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  startClock == null
+                      ? '${_formatMinSec(event.startOffsetSec)} to ${_formatMinSec(event.endOffsetSec)}'
+                      : '$startClock to ${endClock ?? 'end'}',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: _kTextMuted,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: accent.withValues(alpha: 0.16)),
+            ),
+            child: Text(
+              _formatMinSec(event.durationSec),
+              style: TextStyle(
+                fontSize: 11,
+                color: accent,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ],
       ),
     );
+  }
+
+  static String? _formatClockAt(DateTime? start, int offsetSec) {
+    if (start == null) return null;
+    final ts = start.add(Duration(seconds: offsetSec));
+    final hour = ts.hour == 0 ? 12 : (ts.hour > 12 ? ts.hour - 12 : ts.hour);
+    final minute = ts.minute.toString().padLeft(2, '0');
+    final second = ts.second.toString().padLeft(2, '0');
+    final ampm = ts.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minute:$second $ampm';
   }
 }
 
@@ -2292,4 +2464,3 @@ class _DetailStat extends StatelessWidget {
     ),
   );
 }
-
