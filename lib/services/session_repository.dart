@@ -276,7 +276,7 @@ class SessionRepository {
           final event = TherapyPatternEvent.fromJson(
             entry.cast<String, dynamic>(),
           );
-          if (event.patternIndex > 0) out.add(event);
+          if (event.patternIndex >= 0) out.add(event);
         }
       }
       if (out.isNotEmpty) {

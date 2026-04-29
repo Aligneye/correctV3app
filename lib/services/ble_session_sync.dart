@@ -76,7 +76,7 @@ class _PendingSession {
   List<Map<String, int>> therapyPatternEvents() {
     final patterns = therapyPatterns.isNotEmpty
         ? therapyPatterns
-        : (therapyPattern > 0 ? <int>[therapyPattern] : const <int>[]);
+        : (therapyPattern >= 0 ? <int>[therapyPattern] : const <int>[]);
     if (patterns.isEmpty) return const <Map<String, int>>[];
 
     var cursor = 0;

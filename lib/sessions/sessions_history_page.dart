@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:correctv1/analytics/analytics_screen.dart';
 import 'package:correctv1/services/device_manager.dart';
 import 'package:correctv1/services/session_repository.dart';
+import 'package:correctv1/services/therapy_pattern_names.dart';
 import 'package:correctv1/theme/app_theme.dart';
 
 const _kBg = Color(0xFFF7F8FC);
@@ -131,8 +132,8 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
                         ),
                       )
                     : filtered.isEmpty
-                        ? _buildEmpty()
-                        : _buildList(groups),
+                    ? _buildEmpty()
+                    : _buildList(groups),
               ),
             ),
           ],
@@ -143,8 +144,9 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
 
   Widget _buildHeader() {
     final total = _sessions.length;
-    final postureCount =
-        _sessions.where((s) => s.type == SessionType.posture).length;
+    final postureCount = _sessions
+        .where((s) => s.type == SessionType.posture)
+        .length;
     final therapyCount = total - postureCount;
 
     return Container(
@@ -226,10 +228,7 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
           decoration: BoxDecoration(
             color: selected ? _kBlue : Colors.white,
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(
-              color: selected ? _kBlue : _kBorder,
-              width: 1,
-            ),
+            border: Border.all(color: selected ? _kBlue : _kBorder, width: 1),
             boxShadow: selected
                 ? const [
                     BoxShadow(
@@ -271,7 +270,11 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
         children: [
           chip('All', _Filter.all),
           const SizedBox(width: 8),
-          chip('Posture', _Filter.posture, icon: Icons.accessibility_new_rounded),
+          chip(
+            'Posture',
+            _Filter.posture,
+            icon: Icons.accessibility_new_rounded,
+          ),
           const SizedBox(width: 8),
           chip('Therapy', _Filter.therapy, icon: Icons.graphic_eq),
         ],
@@ -309,7 +312,11 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
                 'Wear your Aligneye Pod and start a posture or therapy '
                 'session — it’ll show up here automatically.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12.5, color: _kTextMuted, height: 1.4),
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: _kTextMuted,
+                  height: 1.4,
+                ),
               ),
             ],
           ),
@@ -330,7 +337,8 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
               session: group.sessions[i],
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => SessionDetailScreen(session: group.sessions[i]),
+                  builder: (_) =>
+                      SessionDetailScreen(session: group.sessions[i]),
                 ),
               ),
             ),
@@ -358,13 +366,7 @@ class _SessionsHistoryPageState extends State<SessionsHistoryPage> {
       map.putIfAbsent(key, () => <SessionData>[]).add(s);
     }
     final keys = map.keys.toList()..sort((a, b) => b.compareTo(a));
-    return [
-      for (final key in keys)
-        _DayGroup(
-          day: key,
-          sessions: map[key]!,
-        ),
-    ];
+    return [for (final key in keys) _DayGroup(day: key, sessions: map[key]!)];
   }
 }
 
@@ -386,8 +388,7 @@ class _DayGroup {
     return '${_monthShort(day.month)} ${day.day}, ${day.year}';
   }
 
-  int get totalDurationSec =>
-      sessions.fold(0, (sum, s) => sum + s.durationSec);
+  int get totalDurationSec => sessions.fold(0, (sum, s) => sum + s.durationSec);
 
   String formatTotalDuration() {
     final total = totalDurationSec;
@@ -533,6 +534,17 @@ class _SessionTile extends StatelessWidget {
     final accent = isPosture ? _kBlue : _kGreen;
     final accentBg = isPosture ? _kBlueLight : _kGreenLight;
     final timeStr = _formatTime(session.startTs) ?? '—';
+    final lastPatternIndex =
+        session.therapyPatternEvents
+            ?.where((event) => event.durationSec > 0)
+            .lastOrNull
+            ?.patternIndex ??
+        session.therapyPatternEvents?.lastOrNull?.patternIndex ??
+        session.therapyPatterns?.lastOrNull ??
+        session.pattern;
+    final patternName = lastPatternIndex == null
+        ? 'Unknown'
+        : therapyPatternName(lastPatternIndex);
 
     return Material(
       color: _kCard,
@@ -664,24 +676,19 @@ class _SessionTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    isPosture
-                        ? '${session.score ?? 0}%'
-                        : '#${session.pattern ?? 0}',
+                    isPosture ? '${session.score ?? 0}%' : patternName,
                     style: TextStyle(
-                      fontSize: 17,
+                      fontSize: isPosture ? 17 : 12.5,
                       fontWeight: FontWeight.w700,
                       color: accent,
                       height: 1,
-                      letterSpacing: -0.3,
                     ),
+                    textAlign: TextAlign.end,
                   ),
                   const SizedBox(height: 2),
                   Text(
                     isPosture ? 'good' : 'pattern',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: _kTextHint,
-                    ),
+                    style: const TextStyle(fontSize: 10, color: _kTextHint),
                   ),
                 ],
               ),
@@ -816,11 +823,7 @@ class _CloudPendingIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Padding(
       padding: EdgeInsets.only(left: 6),
-      child: Icon(
-        Icons.cloud_off_rounded,
-        size: 14,
-        color: Color(0xFF94A3B8),
-      ),
+      child: Icon(Icons.cloud_off_rounded, size: 14, color: Color(0xFF94A3B8)),
     );
   }
 }

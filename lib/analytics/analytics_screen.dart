@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:correctv1/services/device_manager.dart';
 import 'package:correctv1/services/session_repository.dart';
+import 'package:correctv1/services/therapy_pattern_names.dart';
 import 'package:correctv1/theme/app_theme.dart';
 
 // ─── Data Models ─────────────────────────────────────────────────────────────
@@ -1461,6 +1462,9 @@ class _SessionItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
+    final patternName = session.pattern == null
+        ? null
+        : therapyPatternName(session.pattern!);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -1558,7 +1562,7 @@ class _SessionItem extends StatelessWidget {
                       if (session.pattern != null) ...[
                         const SizedBox(width: 14),
                         _MiniStat(
-                          value: '#${session.pattern}',
+                          value: patternName ?? 'Unknown',
                           label: 'Pattern',
                         ),
                       ],
@@ -1762,6 +1766,17 @@ class _SessionDetailBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
     final accent = isPosture ? _kBlue : _kGreen;
+    final lastPatternIndex =
+        session.therapyPatternEvents
+            ?.where((event) => event.durationSec > 0)
+            .lastOrNull
+            ?.patternIndex ??
+        session.therapyPatternEvents?.lastOrNull?.patternIndex ??
+        session.therapyPatterns?.lastOrNull ??
+        session.pattern;
+    final patternName = lastPatternIndex == null
+        ? 'Unknown'
+        : therapyPatternName(lastPatternIndex);
 
     return SingleChildScrollView(
       controller: controller,
@@ -1798,11 +1813,9 @@ class _SessionDetailBody extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        isPosture
-                            ? '${session.score ?? 0}%'
-                            : '#${session.pattern ?? 0}',
-                        style: const TextStyle(
-                          fontSize: 56,
+                        isPosture ? '${session.score ?? 0}%' : patternName,
+                        style: TextStyle(
+                          fontSize: isPosture ? 56 : 34,
                           fontWeight: FontWeight.w700,
                           color: Colors.white,
                           height: 1,
@@ -2263,6 +2276,9 @@ class _TherapyPatternsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final events =
         session.therapyPatternEvents ?? const <TherapyPatternEvent>[];
+    final patternName = session.pattern == null
+        ? null
+        : therapyPatternName(session.pattern!);
 
     if (events.isEmpty) {
       return Container(
@@ -2275,7 +2291,7 @@ class _TherapyPatternsCard extends StatelessWidget {
             Expanded(
               child: Text(
                 session.pattern != null
-                    ? 'Pattern #${session.pattern} ran for ${session.duration}.'
+                    ? '$patternName ran for ${session.duration}.'
                     : 'No pattern data captured for this session.',
                 style: const TextStyle(
                   fontSize: 13,
@@ -2374,7 +2390,7 @@ class _TherapyPatternEventRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Pattern #${event.patternIndex}',
+                  therapyPatternName(event.patternIndex),
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,

@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
 import 'package:correctv1/services/session_database.dart';
 import 'package:correctv1/services/session_sync_service.dart';
+import 'package:correctv1/services/therapy_pattern_names.dart';
 
 class LiveSessionRecorder {
   LiveSessionRecorder({
@@ -425,7 +426,13 @@ class LiveSessionRecorder {
   }
 
   int? _patternIndexFrom(String pattern) {
-    final match = RegExp(r'S\d+:(\d+)').firstMatch(pattern);
+    final byName = therapyPatternIndexFromName(pattern);
+    if (byName != null) return byName;
+
+    final match = RegExp(
+      r'(?:pattern|patt|p)[\s:#-]*(\d+)',
+      caseSensitive: false,
+    ).firstMatch(pattern);
     if (match != null) {
       return int.tryParse(match.group(1)!);
     }

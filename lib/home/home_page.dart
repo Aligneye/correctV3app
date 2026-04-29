@@ -20,6 +20,7 @@ import 'package:correctv1/components/nav_bar.dart';
 import 'package:correctv1/calibration/calibration_page.dart';
 import 'package:correctv1/services/device_manager.dart';
 import 'package:correctv1/services/session_repository.dart';
+import 'package:correctv1/services/therapy_pattern_names.dart';
 import 'package:correctv1/theme/app_theme.dart';
 
 const _kPagePadding = EdgeInsets.fromLTRB(24, 24, 24, 100);
@@ -2125,6 +2126,9 @@ class _LiveSessionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
     final accent = isPosture ? _kPrimaryBlue : _kPrimaryGreen;
+    final patternName = session.pattern == null
+        ? null
+        : therapyPatternName(session.pattern!);
 
     return Material(
       color: Colors.transparent,
@@ -2207,14 +2211,13 @@ class _LiveSessionRow extends StatelessWidget {
                     letterSpacing: -0.4,
                   ),
                 )
-              else if (!isPosture && session.pattern != null)
+              else if (!isPosture && patternName != null)
                 Text(
-                  '#${session.pattern}',
+                  patternName,
                   style: TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.w700,
                     color: accent,
-                    letterSpacing: -0.4,
                   ),
                 ),
             ],
@@ -2241,10 +2244,21 @@ class _HomeSessionItem extends StatelessWidget {
     final correctionCount = session.postureEvents
         ?.where((event) => event.wasCorrected)
         .length;
+    final playedTherapyEvents = session.therapyPatternEvents
+        ?.where((event) => event.durationSec > 0)
+        .toList(growable: false);
     final therapyPatternCount =
-        session.therapyPatternEvents?.length ??
+        playedTherapyEvents?.length ??
         session.therapyPatterns?.length ??
         (session.pattern == null ? null : 1);
+    final lastPatternIndex =
+        playedTherapyEvents?.lastOrNull?.patternIndex ??
+        session.therapyPatternEvents?.lastOrNull?.patternIndex ??
+        session.therapyPatterns?.lastOrNull ??
+        session.pattern;
+    final lastPatternName = lastPatternIndex == null
+        ? null
+        : therapyPatternName(lastPatternIndex);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -2358,10 +2372,10 @@ class _HomeSessionItem extends StatelessWidget {
                           value: '$therapyPatternCount',
                           label: 'Patterns',
                         ),
-                      if (!isPosture && session.pattern != null)
+                      if (!isPosture && lastPatternName != null)
                         _HomeSessionMiniStat(
-                          value: '#${session.pattern}',
-                          label: 'Last',
+                          value: lastPatternName,
+                          label: 'Last pattern',
                         ),
                     ],
                   ),
