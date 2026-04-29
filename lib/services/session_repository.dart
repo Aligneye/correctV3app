@@ -302,13 +302,13 @@ class SessionRepository {
       ];
     }
 
-    final base = safeDuration ~/ patterns.length;
-    final remainder = safeDuration % patterns.length;
     var cursor = 0;
     return [
       for (var i = 0; i < patterns.length; i++)
         () {
-          final dur = base + (i < remainder ? 1 : 0);
+          final isLast = i == patterns.length - 1;
+          final remaining = (safeDuration - cursor).clamp(0, 1 << 30).toInt();
+          final dur = isLast ? remaining : remaining.clamp(0, 60).toInt();
           final event = TherapyPatternEvent(
             patternIndex: patterns[i],
             startOffsetSec: cursor,

@@ -79,12 +79,12 @@ class _PendingSession {
         : (therapyPattern > 0 ? <int>[therapyPattern] : const <int>[]);
     if (patterns.isEmpty) return const <Map<String, int>>[];
 
-    final base = durationSec ~/ patterns.length;
-    final remainder = durationSec % patterns.length;
     var cursor = 0;
     final events = <Map<String, int>>[];
     for (var i = 0; i < patterns.length; i++) {
-      final dur = base + (i < remainder ? 1 : 0);
+      final isLast = i == patterns.length - 1;
+      final remaining = (durationSec - cursor).clamp(0, 1 << 30).toInt();
+      final dur = isLast ? remaining : remaining.clamp(0, 60).toInt();
       events.add({'p': patterns[i], 's': cursor, 'd': dur});
       cursor += dur;
     }

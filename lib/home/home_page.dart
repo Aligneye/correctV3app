@@ -2237,6 +2237,14 @@ class _HomeSessionItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
+    final postureEventCount = session.postureEvents?.length ?? session.alerts;
+    final correctionCount = session.postureEvents
+        ?.where((event) => event.wasCorrected)
+        .length;
+    final therapyPatternCount =
+        session.therapyPatternEvents?.length ??
+        session.therapyPatterns?.length ??
+        (session.pattern == null ? null : 1);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -2322,33 +2330,39 @@ class _HomeSessionItem extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 7),
-                  Row(
+                  Wrap(
+                    spacing: 14,
+                    runSpacing: 6,
                     children: [
                       _HomeSessionMiniStat(
                         value: session.duration,
                         label: 'Duration',
                       ),
-                      if (session.score != null) ...[
-                        const SizedBox(width: 14),
+                      if (isPosture && postureEventCount != null)
                         _HomeSessionMiniStat(
-                          value: '${session.score}%',
-                          label: 'Good posture',
+                          value: '$postureEventCount',
+                          label: 'Slouches',
                         ),
-                      ],
-                      if (session.alerts != null) ...[
-                        const SizedBox(width: 14),
+                      if (isPosture && correctionCount != null)
                         _HomeSessionMiniStat(
-                          value: '${session.alerts}×',
-                          label: 'Alerts',
+                          value: '$correctionCount',
+                          label: 'Corrected',
                         ),
-                      ],
-                      if (session.pattern != null) ...[
-                        const SizedBox(width: 14),
+                      if (isPosture && (session.wrongDurSec ?? 0) > 0)
+                        _HomeSessionMiniStat(
+                          value: _formatCompactDuration(session.wrongDurSec!),
+                          label: 'Bad time',
+                        ),
+                      if (!isPosture && therapyPatternCount != null)
+                        _HomeSessionMiniStat(
+                          value: '$therapyPatternCount',
+                          label: 'Patterns',
+                        ),
+                      if (!isPosture && session.pattern != null)
                         _HomeSessionMiniStat(
                           value: '#${session.pattern}',
-                          label: 'Pattern',
+                          label: 'Last',
                         ),
-                      ],
                     ],
                   ),
                   if (session.score != null) ...[
@@ -2376,6 +2390,13 @@ class _HomeSessionItem extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  static String _formatCompactDuration(int seconds) {
+    if (seconds < 60) return '${seconds}s';
+    final minutes = seconds ~/ 60;
+    final rem = seconds % 60;
+    return rem == 0 ? '${minutes}m' : '${minutes}m ${rem}s';
   }
 }
 
