@@ -15,7 +15,6 @@ const _kTextHint = Color(0xFFBBBBCC);
 const _kBlue = AppTheme.brandPrimary;
 const _kBlueLight = Color(0xFFEFF6FF);
 const _kGreen = AppTheme.successText;
-const _kGreenLight = AppTheme.successBg;
 const _kRed = AppTheme.destructive;
 
 enum _Filter { all, posture, therapy }
@@ -531,197 +530,209 @@ class _SessionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPosture = session.type == SessionType.posture;
-    final accent = isPosture ? _kBlue : _kGreen;
-    final accentBg = isPosture ? _kBlueLight : _kGreenLight;
-    final timeStr = _formatTime(session.startTs) ?? '—';
+    final postureEventCount = session.postureEvents?.length ?? session.alerts;
+    final correctionCount = session.postureEvents
+        ?.where((event) => event.wasCorrected)
+        .length;
+    final playedTherapyEvents = session.therapyPatternEvents
+        ?.where((event) => event.durationSec > 0)
+        .toList(growable: false);
+    final therapyPatternCount =
+        playedTherapyEvents?.length ??
+        session.therapyPatterns?.length ??
+        (session.pattern == null ? null : 1);
     final lastPatternIndex =
-        session.therapyPatternEvents
-            ?.where((event) => event.durationSec > 0)
-            .lastOrNull
-            ?.patternIndex ??
+        playedTherapyEvents?.lastOrNull?.patternIndex ??
         session.therapyPatternEvents?.lastOrNull?.patternIndex ??
         session.therapyPatterns?.lastOrNull ??
         session.pattern;
-    final patternName = lastPatternIndex == null
-        ? 'Unknown'
-        : therapyPatternName(lastPatternIndex);
-    final patternDescription = lastPatternIndex == null
+    final lastPatternName = lastPatternIndex == null
         ? null
-        : therapyPatternDescription(lastPatternIndex);
+        : therapyPatternName(lastPatternIndex);
 
-    return Material(
-      color: _kCard,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(13),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: _kBorder, width: 0.5),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x0A000000),
-                blurRadius: 8,
-                offset: Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: accentBg,
-                  borderRadius: BorderRadius.circular(13),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(13, 13, 10, 13),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFEEEEF0), width: 0.5),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x14000000),
+              blurRadius: 18,
+              offset: Offset(0, 8),
+            ),
+            BoxShadow(
+              color: Color(0x08000000),
+              blurRadius: 4,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isPosture
+                      ? const [Color(0xFFC084FC), Color(0xFFEC4899)]
+                      : const [Color(0xFF60A5FA), Color(0xFF06B6D4)],
                 ),
-                child: Icon(
-                  isPosture
-                      ? Icons.accessibility_new_rounded
-                      : Icons.graphic_eq,
-                  size: 22,
-                  color: accent,
-                ),
+                borderRadius: BorderRadius.circular(13),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            session.name,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: _kText,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (session.isLive) const _LivePill(),
-                        if (!session.tsSynced && !session.isLive)
-                          const _UnsyncedTimePill(),
-                        if (!session.cloudSynced && !session.isLive)
-                          const _CloudPendingIcon(),
-                      ],
-                    ),
-                    if (!isPosture && patternDescription != null) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        patternDescription,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: _kTextMuted,
-                          height: 1.25,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.schedule_rounded,
-                          size: 12,
-                          color: _kTextHint,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          timeStr,
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            color: _kTextMuted,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        const Icon(
-                          Icons.timer_outlined,
-                          size: 12,
-                          color: _kTextHint,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          session.duration,
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            color: _kTextMuted,
-                          ),
-                        ),
-                        if (isPosture && session.alerts != null) ...[
-                          const SizedBox(width: 10),
-                          const Icon(
-                            Icons.warning_amber_rounded,
-                            size: 12,
-                            color: _kRed,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${session.alerts}',
-                            style: const TextStyle(
-                              fontSize: 11.5,
-                              color: _kTextMuted,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    if (isPosture && session.score != null) ...[
-                      const SizedBox(height: 7),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(3),
-                        child: LinearProgressIndicator(
-                          value: session.score! / 100,
-                          backgroundColor: const Color(0xFFEEEEF8),
-                          valueColor: AlwaysStoppedAnimation<Color>(accent),
-                          minHeight: 3.5,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
+              child: Icon(
+                isPosture ? Icons.accessibility_new_rounded : Icons.graphic_eq,
+                color: Colors.white,
+                size: 22,
               ),
-              const SizedBox(width: 8),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    isPosture ? '${session.score ?? 0}%' : patternName,
-                    style: TextStyle(
-                      fontSize: isPosture ? 17 : 12.5,
-                      fontWeight: FontWeight.w700,
-                      color: accent,
-                      height: 1,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          session.name,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            color: _kText,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (session.isLive) ...[
+                        const SizedBox(width: 6),
+                        const _LivePill(),
+                      ],
+                      if (!session.cloudSynced && !session.isLive)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 6),
+                          child: Icon(
+                            Icons.cloud_off_rounded,
+                            size: 13,
+                            color: Color(0xFF94A3B8),
+                          ),
+                        ),
+                      const SizedBox(width: 8),
+                      Text(
+                        session.time,
+                        style: const TextStyle(fontSize: 10, color: _kTextHint),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 7),
+                  Wrap(
+                    spacing: 14,
+                    runSpacing: 6,
+                    children: [
+                      _SessionMiniStat(
+                        value: session.duration,
+                        label: 'Duration',
+                      ),
+                      if (isPosture && postureEventCount != null)
+                        _SessionMiniStat(
+                          value: '$postureEventCount',
+                          label: 'Slouches',
+                        ),
+                      if (isPosture && correctionCount != null)
+                        _SessionMiniStat(
+                          value: '$correctionCount',
+                          label: 'Corrected',
+                        ),
+                      if (isPosture && (session.wrongDurSec ?? 0) > 0)
+                        _SessionMiniStat(
+                          value: _formatCompactDuration(session.wrongDurSec!),
+                          label: 'Bad time',
+                        ),
+                      if (!isPosture && therapyPatternCount != null)
+                        _SessionMiniStat(
+                          value: '$therapyPatternCount',
+                          label: 'Patterns',
+                        ),
+                      if (!isPosture && lastPatternName != null)
+                        _SessionMiniStat(
+                          value: lastPatternName,
+                          label: 'Last pattern',
+                        ),
+                    ],
+                  ),
+                  if (session.score != null) ...[
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(3),
+                      child: LinearProgressIndicator(
+                        value: session.score! / 100,
+                        backgroundColor: const Color(0xFFEEEEF8),
+                        valueColor: const AlwaysStoppedAnimation<Color>(_kBlue),
+                        minHeight: 3.5,
+                      ),
                     ),
-                    textAlign: TextAlign.end,
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    isPosture ? 'good' : 'pattern',
-                    style: const TextStyle(fontSize: 10, color: _kTextHint),
-                  ),
+                  ],
                 ],
               ),
-            ],
-          ),
+            ),
+            const SizedBox(width: 4),
+            const Icon(
+              Icons.chevron_right_rounded,
+              color: Color(0xFFCCCCDD),
+              size: 20,
+            ),
+          ],
         ),
       ),
     );
   }
 
-  String? _formatTime(DateTime? ts) {
-    if (ts == null) return null;
-    final hour = ts.hour == 0 ? 12 : (ts.hour > 12 ? ts.hour - 12 : ts.hour);
-    final minute = ts.minute.toString().padLeft(2, '0');
-    final ampm = ts.hour >= 12 ? 'PM' : 'AM';
-    return '$hour:$minute $ampm';
+  static String _formatCompactDuration(int seconds) {
+    if (seconds < 60) return '${seconds}s';
+    final minutes = seconds ~/ 60;
+    final rem = seconds % 60;
+    return rem == 0 ? '${minutes}m' : '${minutes}m ${rem}s';
   }
+}
+
+class _SessionMiniStat extends StatelessWidget {
+  final String value;
+  final String label;
+
+  const _SessionMiniStat({required this.value, required this.label});
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        value,
+        style: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: Color(0xFF1A1A2E),
+          height: 1.2,
+        ),
+      ),
+      Text(
+        label,
+        style: const TextStyle(
+          fontSize: 10,
+          color: Color(0xFFBBBBCC),
+          height: 1.3,
+        ),
+      ),
+    ],
+  );
 }
 
 class _LivePill extends StatelessWidget {
@@ -796,50 +807,6 @@ class _PulseDotState extends State<_PulseDot>
           ),
         );
       },
-    );
-  }
-}
-
-class _UnsyncedTimePill extends StatelessWidget {
-  const _UnsyncedTimePill();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      margin: const EdgeInsets.only(left: 6),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFF7E6),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFFFFE2A8)),
-      ),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.history_toggle_off, size: 10, color: Color(0xFFB45309)),
-          SizedBox(width: 3),
-          Text(
-            'time',
-            style: TextStyle(
-              color: Color(0xFFB45309),
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CloudPendingIcon extends StatelessWidget {
-  const _CloudPendingIcon();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.only(left: 6),
-      child: Icon(Icons.cloud_off_rounded, size: 14, color: Color(0xFF94A3B8)),
     );
   }
 }
