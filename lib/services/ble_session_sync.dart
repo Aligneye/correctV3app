@@ -16,6 +16,14 @@ const String _kSessionAckUuid = '0000aa02-0000-1000-8000-00805f9b34fb';
 const int _kSessionSyncStart = 0xFF;
 const int _kExtensionMarker = 0xEE;
 
+bool _matchesBleUuid(Guid uuid, String expected) {
+  final actual = uuid.toString().toLowerCase();
+  final normalizedExpected = expected.toLowerCase();
+  return actual == normalizedExpected ||
+      actual == normalizedExpected.substring(4, 8) ||
+      (actual.length == 4 && normalizedExpected.startsWith('0000$actual-'));
+}
+
 /// Progress snapshot emitted by [BleSessionSync.progress] for UI feedback.
 class SyncProgress {
   const SyncProgress({
@@ -147,26 +155,27 @@ class BleSessionSync {
       // AlignEyeDeviceService.connect() already calls discoverServices(),
       // so calling it again can cause BLE stack errors on some platforms.
       final services = _device.servicesList;
+      void scanServices(List<BluetoothService> serviceList) {
+        for (final service in serviceList) {
+          for (final char in service.characteristics) {
+            if (_matchesBleUuid(char.uuid, _kSessionDataUuid)) {
+              _dataChar = char;
+            }
+            if (_matchesBleUuid(char.uuid, _kSessionAckUuid)) {
+              _ackChar = char;
+            }
+          }
+        }
+      }
+
       if (services.isEmpty) {
         debugPrint(
           'BleSessionSync: no cached services, falling back to discovery',
         );
         final discovered = await _device.discoverServices();
-        for (final service in discovered) {
-          for (final char in service.characteristics) {
-            final uuid = char.uuid.toString().toLowerCase();
-            if (uuid == _kSessionDataUuid) _dataChar = char;
-            if (uuid == _kSessionAckUuid) _ackChar = char;
-          }
-        }
+        scanServices(discovered);
       } else {
-        for (final service in services) {
-          for (final char in service.characteristics) {
-            final uuid = char.uuid.toString().toLowerCase();
-            if (uuid == _kSessionDataUuid) _dataChar = char;
-            if (uuid == _kSessionAckUuid) _ackChar = char;
-          }
-        }
+        scanServices(services);
       }
 
       if (_dataChar == null || _ackChar == null) {
@@ -190,6 +199,7 @@ class BleSessionSync {
         },
       );
       await _dataChar!.setNotifyValue(true);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
 
       await _writeAck(_kSessionSyncStart);
       debugPrint('[SESSION] Sync start requested over BLE');
@@ -208,6 +218,11 @@ class BleSessionSync {
     _idleTimer = null;
     await _notifySub?.cancel();
     _notifySub = null;
+    try {
+      await _dataChar?.setNotifyValue(false);
+    } catch (_) {
+      // Best effort cleanup; disconnects can make CCCD writes fail.
+    }
     if (!_progressController.isClosed) {
       await _progressController.close();
     }
@@ -369,8 +384,8 @@ class BleSessionSync {
       return false;
     }
 
-    final effectiveStartTs = pending.startTsIso ??
-        DateTime.now().toUtc().toIso8601String();
+    final effectiveStartTs =
+        pending.startTsIso ?? DateTime.now().toUtc().toIso8601String();
 
     final row = <String, dynamic>{
       'user_id': user.id,
@@ -383,7 +398,8 @@ class BleSessionSync {
           ? pending.therapyPattern
           : null,
       'ts_synced': pending.tsSynced,
-      'posture_events': pending.type == 'posture' && pending.postureEvents.isNotEmpty
+      'posture_events':
+          pending.type == 'posture' && pending.postureEvents.isNotEmpty
           ? pending.postureEvents
           : null,
       'therapy_patterns':
@@ -446,7 +462,8 @@ class BleSessionSync {
     try {
       await char.write(
         [byte],
-        withoutResponse: char.properties.writeWithoutResponse,
+        withoutResponse:
+            !char.properties.write && char.properties.writeWithoutResponse,
       );
     } catch (e) {
       debugPrint('BleSessionSync: ACK write failed (byte=$byte): $e');
