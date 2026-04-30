@@ -43,7 +43,7 @@ class ModesPage extends StatelessWidget {
       title: 'Walking mode',
       subtitle: 'Walking posture trainer',
       icon: Icons.directions_walk,
-      gradient: AppTheme.alignWalkGradient,
+      gradient: AppTheme.trainingGradient,
     ),
     _ModeData(
       title: 'Analytics',

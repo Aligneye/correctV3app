@@ -61,6 +61,14 @@ class PostureReading {
   final String therapyNextPattern;
   final int therapyElapsedSeconds;
   final int therapyRemainingSeconds;
+  final int therapyIntensityLevel;
+  /// Full therapy pattern plan for the active session. Each entry is a
+  /// firmware TherapyPattern index (0..13). Empty when not in therapy or
+  /// the device hasn't announced the sequence yet.
+  final List<int> therapyPatternSequence;
+  /// Index inside [therapyPatternSequence] of the currently-playing pattern.
+  /// -1 when unknown / not in therapy.
+  final int therapyCurrentPatternIndex;
   final int liveSessionId;
   final int liveSessionElapsedSeconds;
   final int liveSessionStartEpoch;
@@ -93,6 +101,9 @@ class PostureReading {
     required this.therapyNextPattern,
     required this.therapyElapsedSeconds,
     required this.therapyRemainingSeconds,
+    required this.therapyIntensityLevel,
+    required this.therapyPatternSequence,
+    required this.therapyCurrentPatternIndex,
     required this.liveSessionId,
     required this.liveSessionElapsedSeconds,
     required this.liveSessionStartEpoch,
@@ -152,6 +163,27 @@ class PostureReading {
       therapyRemainingSeconds: toInt(
         json['t_rem'] ?? json['therapy_remaining_sec'],
       ),
+      therapyIntensityLevel: toInt(
+        json['t_lvl'] ?? json['therapy_intensity_level'],
+      ),
+      therapyPatternSequence: () {
+        final raw = (json['t_seq'] ?? json['therapy_pattern_sequence'])
+            ?.toString();
+        if (raw == null || raw.trim().isEmpty) return const <int>[];
+        final out = <int>[];
+        for (final token in raw.split(',')) {
+          final parsed = int.tryParse(token.trim());
+          if (parsed != null) out.add(parsed);
+        }
+        return out;
+      }(),
+      therapyCurrentPatternIndex: () {
+        final raw = json['t_cur'] ?? json['therapy_current_pattern_index'];
+        if (raw == null) return -1;
+        if (raw is int) return raw;
+        if (raw is num) return raw.toInt();
+        return int.tryParse(raw.toString()) ?? -1;
+      }(),
       liveSessionId: toInt(json['s_id'] ?? json['session_id']),
       liveSessionElapsedSeconds: toInt(
         json['s_elap'] ?? json['session_elapsed_sec'],
@@ -257,6 +289,8 @@ class AlignEyeDeviceService {
       currentReading.value?.therapyElapsedSeconds ?? 0;
   int get currentTherapyRemainingSeconds =>
       currentReading.value?.therapyRemainingSeconds ?? 0;
+  int get currentTherapyIntensityLevel =>
+      currentReading.value?.therapyIntensityLevel ?? 0;
   int get currentLiveSessionElapsedSeconds =>
       currentReading.value?.liveSessionElapsedSeconds ?? 0;
 
@@ -296,6 +330,51 @@ class AlignEyeDeviceService {
     } catch (e) {
       debugPrint('Failed to send mode control: $e');
     }
+  }
+
+  /// Start a therapy session on the device with a specific duration and
+  /// intensity level (1-3). The device drives the timing and pattern
+  /// sequencing — the phone is just the remote. Returns true if the command
+  /// was written successfully.
+  Future<bool> sendTherapyStart({
+    required int durationMinutes,
+    required int intensityLevel,
+  }) async {
+    if (connectionStatus.value != DeviceConnectionStatus.connected) {
+      return false;
+    }
+    final clampedLevel = intensityLevel.clamp(1, 3);
+    final supportedMinutes = const {10, 20, 30};
+    final minutes = supportedMinutes.contains(durationMinutes)
+        ? durationMinutes
+        : 10;
+    // Order in the payload matters: THERAPY_INTENSITY and THERAPY_DURATION_MIN
+    // are applied before MODE so the new therapy session picks them up
+    // immediately on setTherapyMode().
+    return _writeTextCommand(
+      'THERAPY_INTENSITY=$clampedLevel;'
+      'THERAPY_DURATION_MIN=$minutes;'
+      'MODE=THERAPY',
+    );
+  }
+
+  /// Stop an in-progress therapy session and return the device to tracking.
+  Future<bool> sendTherapyStop() async {
+    if (connectionStatus.value != DeviceConnectionStatus.connected) {
+      return false;
+    }
+    return _writeTextCommand('MODE=TRACKING');
+  }
+
+  /// Update only the therapy intensity while a session is running. Useful
+  /// if we ever allow mid-session adjustment; firmware applies it on the
+  /// next motor write without disturbing the pattern shape.
+  Future<bool> sendTherapyIntensity(int intensityLevel) async {
+    if (connectionStatus.value != DeviceConnectionStatus.connected) {
+      return false;
+    }
+    final clampedLevel = intensityLevel.clamp(1, 3);
+    return _writeTextCommand('THERAPY_INTENSITY=$clampedLevel');
   }
 
   /// Sends the current phone date/time and timezone to the device.

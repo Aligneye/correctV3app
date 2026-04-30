@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:correctv1/home/meditation_page.dart';
 import 'package:correctv1/discover/discover_page.dart';
 import 'package:correctv1/home/therapy_page.dart';
@@ -222,7 +223,6 @@ class _HomeDashboardState extends State<HomeDashboard>
   double _postureAngle = 0;
   String _postureStatus = 'Waiting for data';
   bool _isBadPosture = false;
-  String _recentValues = 'No data yet';
   int _batteryLevel = 0;
   _ModeControlType _selectedMode = _ModeControlType.track;
   _PostureTimingType _selectedPostureTiming = _PostureTimingType.instant;
@@ -238,6 +238,10 @@ class _HomeDashboardState extends State<HomeDashboard>
   bool _isLoadingOfflineSessions = true;
   int _lastSyncTick = 0;
   List<SessionData> _offlineSessions = const <SessionData>[];
+  TodayStats? _todayStats;
+  StreakStats? _streakStats;
+  bool _streakPopupCheckedThisSession = false;
+  final GlobalKey _streakTileKey = GlobalKey();
 
   static final List<_QuickMode> _quickModes = [
     _QuickMode(
@@ -290,7 +294,6 @@ class _HomeDashboardState extends State<HomeDashboard>
         _postureAngle = reading.angle;
         _isBadPosture = reading.isBadPosture;
         _postureStatus = reading.isBadPosture ? 'Bad posture' : 'Good posture';
-        _recentValues = reading.toCompactString();
         _batteryLevel = reading.batteryPercentage.clamp(0, 100);
         _selectedMode = _modeFromDevice(reading.mode);
         _selectedPostureTiming = _postureTimingFromDevice(reading.subMode);
@@ -320,6 +323,7 @@ class _HomeDashboardState extends State<HomeDashboard>
     _deviceManager.syncCompletedTick.addListener(_handleSessionSyncFinished);
     _deviceManager.isSyncing.addListener(_handleSyncingChanged);
     _deviceManager.activeSessionId.addListener(_handleActiveSessionChanged);
+    unawaited(_hydrateCachedStreak());
     unawaited(_loadOfflineSessions());
   }
 
@@ -353,6 +357,339 @@ class _HomeDashboardState extends State<HomeDashboard>
     unawaited(_loadOfflineSessions());
   }
 
+  static _StatItemData _goodPostureStatItem(TodayStats? stats) {
+    const gradient = AppTheme.alignWalkGradient;
+    const icon = Icons.auto_awesome_rounded;
+    const label = 'Good posture';
+
+    if (stats == null) {
+      return const _StatItemData(
+        value: '-',
+        label: label,
+        trendText: 'Loading…',
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    if (!stats.hasTodayPostureData) {
+      return const _StatItemData(
+        value: '—',
+        label: label,
+        trendText: 'Do a training',
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    final String trendText;
+    final bool positive;
+    if (!stats.yesterdayHasPostureData) {
+      trendText = 'First today';
+      positive = true;
+    } else if (stats.postureDeltaVsYesterday == 0) {
+      trendText = 'Same';
+      positive = true;
+    } else {
+      final delta = stats.postureDeltaVsYesterday;
+      final direction = delta > 0 ? 'more' : 'less';
+      trendText = '${delta.abs()}% $direction';
+      positive = delta > 0;
+    }
+
+    return _StatItemData(
+      value: '${stats.todayPct}',
+      unit: '%',
+      label: label,
+      trendText: trendText,
+      icon: icon,
+      gradient: gradient,
+      positiveTrend: positive,
+      trendNeutral:
+          !stats.yesterdayHasPostureData || stats.postureDeltaVsYesterday == 0,
+    );
+  }
+
+  static _StatItemData _trackedTimeStatItem(TodayStats? stats) {
+    const gradient = AppTheme.trackingGradient;
+    const icon = Icons.monitor_heart_outlined;
+    const label = 'Tracked time';
+
+    if (stats == null) {
+      return const _StatItemData(
+        value: '—',
+        label: label,
+        trendText: 'Loading…',
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    if (!stats.hasTodayTrackedData) {
+      return const _StatItemData(
+        value: '0',
+        unit: 'min',
+        label: label,
+        trendText: 'No sessions',
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    final display = _formatTrackedValue(stats.todayTrackedSec);
+
+    final String trendText;
+    final bool positive;
+    final bool neutral;
+    if (!stats.yesterdayHasTrackedData) {
+      trendText = 'First today';
+      positive = true;
+      neutral = true;
+    } else {
+      final deltaSec = stats.trackedDeltaSecVsYesterday;
+      if (deltaSec == 0) {
+        trendText = 'Same';
+        positive = true;
+        neutral = true;
+      } else {
+        final direction = deltaSec > 0 ? 'more' : 'less';
+        trendText = '${_formatDeltaDuration(deltaSec.abs())} $direction';
+        positive = deltaSec > 0;
+        neutral = false;
+      }
+    }
+
+    return _StatItemData(
+      value: display.value,
+      unit: display.unit,
+      label: label,
+      trendText: trendText,
+      icon: icon,
+      gradient: gradient,
+      positiveTrend: positive,
+      trendNeutral: neutral,
+    );
+  }
+
+  static _DisplayValue _formatTrackedValue(int totalSec) {
+    if (totalSec < 3600) {
+      final minutes = (totalSec / 60).round();
+      return _DisplayValue('$minutes', 'min');
+    }
+    final hours = totalSec / 3600.0;
+    return _DisplayValue(hours.toStringAsFixed(1), 'h');
+  }
+
+  static String _formatDeltaDuration(int seconds) {
+    if (seconds < 3600) {
+      final minutes = (seconds / 60).round();
+      return '${minutes}min';
+    }
+    final hours = seconds / 3600.0;
+    return '${hours.toStringAsFixed(1)}h';
+  }
+
+  static _StatItemData _sessionsStatItem(TodayStats? stats) {
+    const gradient = AppTheme.meditationGradient;
+    const icon = Icons.model_training;
+    const label = 'Sessions done';
+
+    if (stats == null) {
+      return const _StatItemData(
+        value: '—',
+        label: label,
+        trendText: 'Loading…',
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    if (!stats.hasTodaySessions) {
+      return const _StatItemData(
+        value: '0',
+        label: label,
+        trendText: 'Do a session',
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    final String trendText;
+    final bool positive;
+    final bool neutral;
+    if (!stats.yesterdayHasSessions) {
+      trendText = 'First today';
+      positive = true;
+      neutral = true;
+    } else {
+      final delta = stats.sessionCountDeltaVsYesterday;
+      if (delta == 0) {
+        trendText = 'Same';
+        positive = true;
+        neutral = true;
+      } else {
+        final direction = delta > 0 ? 'more' : 'less';
+        trendText = '${delta.abs()} $direction';
+        positive = delta > 0;
+        neutral = false;
+      }
+    }
+
+    return _StatItemData(
+      value: '${stats.todaySessionCount}',
+      label: label,
+      trendText: trendText,
+      icon: icon,
+      gradient: gradient,
+      positiveTrend: positive,
+      trendNeutral: neutral,
+    );
+  }
+
+  static _StatItemData _lastSessionStatItem(
+    List<SessionData> sessions,
+    bool isLoading,
+  ) {
+    const label = 'Last session';
+
+    if (isLoading && sessions.isEmpty) {
+      return const _StatItemData(
+        value: '-',
+        label: label,
+        trendText: 'Loading...',
+        icon: Icons.history_rounded,
+        gradient: AppTheme.meditationGradient,
+        trendNeutral: true,
+      );
+    }
+
+    if (sessions.isEmpty) {
+      return const _StatItemData(
+        value: 'None',
+        label: label,
+        trendText: 'Do a session',
+        icon: Icons.history_rounded,
+        gradient: AppTheme.meditationGradient,
+        trendNeutral: true,
+      );
+    }
+
+    final session = sessions.first;
+    final isTraining = session.type == SessionType.posture;
+    return _StatItemData(
+      value: isTraining ? 'Training' : 'Therapy',
+      label: label,
+      trendText: session.isLive ? 'Running now' : session.duration,
+      icon: isTraining
+          ? Icons.accessibility_new_rounded
+          : Icons.graphic_eq_rounded,
+      gradient: isTraining
+          ? AppTheme.trainingGradient
+          : AppTheme.vibrationTherapyGradient,
+      trendNeutral: true,
+    );
+  }
+
+  static _StatItemData _therapyTimeStatItem(TodayStats? stats) {
+    return _durationStatItem(
+      stats: stats,
+      label: 'Therapy time',
+      icon: Icons.graphic_eq,
+      gradient: AppTheme.vibrationTherapyGradient,
+      emptyCta: 'Do a therapy',
+      todaySec: stats?.todayTherapyDurationSec ?? 0,
+      yesterdaySec: stats?.yesterdayTherapyDurationSec ?? 0,
+      yesterdayHasData: stats?.yesterdayHasTherapyData ?? false,
+    );
+  }
+
+  static _StatItemData _trainingTimeStatItem(TodayStats? stats) {
+    return _durationStatItem(
+      stats: stats,
+      label: 'Training time',
+      icon: Icons.accessibility_new_rounded,
+      gradient: AppTheme.trainingGradient,
+      emptyCta: 'Do a training',
+      todaySec: stats?.todayPostureDurationSec ?? 0,
+      yesterdaySec: stats?.yesterdayPostureDurationSec ?? 0,
+      yesterdayHasData: stats?.yesterdayHasPostureData ?? false,
+    );
+  }
+
+  static _StatItemData _durationStatItem({
+    required TodayStats? stats,
+    required String label,
+    required IconData icon,
+    required LinearGradient gradient,
+    required String emptyCta,
+    required int todaySec,
+    required int yesterdaySec,
+    required bool yesterdayHasData,
+  }) {
+    if (stats == null) {
+      return _StatItemData(
+        value: '—',
+        label: label,
+        trendText: 'Loading…',
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    if (todaySec <= 0) {
+      return _StatItemData(
+        value: '0',
+        unit: 'min',
+        label: label,
+        trendText: emptyCta,
+        icon: icon,
+        gradient: gradient,
+        trendNeutral: true,
+      );
+    }
+
+    final display = _formatTrackedValue(todaySec);
+
+    final String trendText;
+    final bool positive;
+    final bool neutral;
+    if (!yesterdayHasData) {
+      trendText = 'First today';
+      positive = true;
+      neutral = true;
+    } else {
+      final deltaSec = todaySec - yesterdaySec;
+      if (deltaSec == 0) {
+        trendText = 'Same';
+        positive = true;
+        neutral = true;
+      } else {
+        final direction = deltaSec > 0 ? 'more' : 'less';
+        trendText = '${_formatDeltaDuration(deltaSec.abs())} $direction';
+        positive = deltaSec > 0;
+        neutral = false;
+      }
+    }
+
+    return _StatItemData(
+      value: display.value,
+      unit: display.unit,
+      label: label,
+      trendText: trendText,
+      icon: icon,
+      gradient: gradient,
+      positiveTrend: positive,
+      trendNeutral: neutral,
+    );
+  }
+
   Future<void> _loadOfflineSessions() async {
     if (!mounted) return;
     setState(() => _isLoadingOfflineSessions = true);
@@ -361,12 +698,18 @@ class _HomeDashboardState extends State<HomeDashboard>
         'all',
         liveSessionId: _deviceManager.activeSessionId.value,
       );
+      final todayStats = await _sessionRepository.fetchTodayStats();
+      final streakStats = await _sessionRepository.fetchStreakStats();
       if (!mounted) return;
       debugPrint('HomeDashboard: loaded ${sessions.length} sessions');
       setState(() {
         _offlineSessions = sessions.take(5).toList(growable: false);
+        _todayStats = todayStats;
+        _streakStats = streakStats;
         _isLoadingOfflineSessions = false;
       });
+      unawaited(_persistStreakCache(streakStats));
+      unawaited(_maybeShowStreakPopup(streakStats));
     } catch (e) {
       debugPrint('HomeDashboard: _loadOfflineSessions error: $e');
       if (!mounted) return;
@@ -374,6 +717,99 @@ class _HomeDashboardState extends State<HomeDashboard>
         _isLoadingOfflineSessions = false;
       });
     }
+  }
+
+  static const String _kStreakPrefsLastDay = 'streak_popup_last_day';
+  static const String _kStreakPrefsLastValue = 'streak_popup_last_value';
+  static const String _kStreakPrefsCachedHighest = 'streak_cached_highest';
+
+  Future<void> _persistStreakCache(StreakStats stats) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kStreakPrefsLastValue, stats.currentStreak);
+      await prefs.setInt(_kStreakPrefsCachedHighest, stats.highestStreak);
+    } catch (e) {
+      debugPrint('HomeDashboard: _persistStreakCache error: $e');
+    }
+  }
+
+  Future<void> _hydrateCachedStreak() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedStreak = prefs.getInt(_kStreakPrefsLastValue) ?? 0;
+      final cachedHighest = prefs.getInt(_kStreakPrefsCachedHighest) ?? 0;
+      if (!mounted || _streakStats != null) return;
+      setState(() {
+        _streakStats = StreakStats(
+          currentStreak: cachedStreak,
+          highestStreak: cachedHighest,
+          todayActive: false,
+          todayStreakDay: DateTime.now(),
+        );
+      });
+    } catch (e) {
+      debugPrint('HomeDashboard: _hydrateCachedStreak error: $e');
+    }
+  }
+
+  Future<void> _maybeShowStreakPopup(StreakStats stats) async {
+    if (_streakPopupCheckedThisSession) return;
+    _streakPopupCheckedThisSession = true;
+
+    final prefs = await SharedPreferences.getInstance();
+    final lastDayStr = prefs.getString(_kStreakPrefsLastDay);
+    final lastValue = prefs.getInt(_kStreakPrefsLastValue) ?? 0;
+
+    final todayKey = _streakDayKey(stats.todayStreakDay);
+    if (lastDayStr == todayKey) {
+      return; // already shown this streak day
+    }
+
+    final kind = _classifyStreakEvent(
+      previousStreak: lastValue,
+      currentStreak: stats.currentStreak,
+    );
+
+    await prefs.setString(_kStreakPrefsLastDay, todayKey);
+    await prefs.setInt(_kStreakPrefsLastValue, stats.currentStreak);
+
+    if (kind == null || !mounted) return;
+
+    // Defer to post-frame so we don't fight the initial build animations.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        barrierColor: Colors.black.withValues(alpha: 0.55),
+        builder: (_) => _StreakPopup(
+          stats: stats,
+          kind: kind,
+          resolveTarget: _resolveStreakTileRect,
+        ),
+      );
+    });
+  }
+
+  Rect? _resolveStreakTileRect() {
+    final ctx = _streakTileKey.currentContext;
+    if (ctx == null) return null;
+    final box = ctx.findRenderObject();
+    if (box is! RenderBox || !box.attached) return null;
+    final topLeft = box.localToGlobal(Offset.zero);
+    return topLeft & box.size;
+  }
+
+  static String _streakDayKey(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  static _StreakPopupKind? _classifyStreakEvent({
+    required int previousStreak,
+    required int currentStreak,
+  }) {
+    if (currentStreak > previousStreak) return _StreakPopupKind.increased;
+    if (currentStreak < previousStreak) return _StreakPopupKind.broken;
+    return null; // unchanged — no popup
   }
 
   bool get _isTherapyCountdownRunning =>
@@ -751,7 +1187,7 @@ class _HomeDashboardState extends State<HomeDashboard>
 
   int _therapyMinutesFromDevice(String subMode) {
     final minutes = int.tryParse(subMode.split(' ').first.trim());
-    if (minutes == 5 || minutes == 10 || minutes == 20) {
+    if (minutes == 10 || minutes == 20 || minutes == 30) {
       return minutes!;
     }
     return _therapyDurationMinutes;
@@ -976,44 +1412,20 @@ class _HomeDashboardState extends State<HomeDashboard>
               _StaggeredFadeSlide(
                 controller: _controller,
                 delayMs: 100,
-                child: const _StatsSummaryCard(
-                  streakDays: 12,
+                child: _StatsSummaryCard(
+                  streakDays: _streakStats?.currentStreak ?? 0,
+                  streakTodayActive: _streakStats?.todayActive ?? false,
+                  streakTileKey: _streakTileKey,
                   items: [
-                    _StatItemData(
-                      value: '82',
-                      unit: '%',
-                      label: 'Good posture',
-                      trendText: '6% from last week',
-                      icon: Icons.accessibility_new_rounded,
-                      gradient: AppTheme.goodPostureGradient,
-                      positiveTrend: true,
+                    _lastSessionStatItem(
+                      _offlineSessions,
+                      _isLoadingOfflineSessions,
                     ),
-                    _StatItemData(
-                      value: '14',
-                      unit: 'h',
-                      label: 'Tracked time',
-                      trendText: '2.5h more',
-                      icon: Icons.bar_chart_rounded,
-                      gradient: AppTheme.trackingGradient,
-                      positiveTrend: true,
-                    ),
-                    _StatItemData(
-                      value: '9',
-                      label: 'Sessions done',
-                      trendText: '3 more',
-                      icon: Icons.self_improvement,
-                      gradient: AppTheme.meditationGradient,
-                      positiveTrend: true,
-                    ),
-                    _StatItemData(
-                      value: '47',
-                      unit: 'min',
-                      label: 'Therapy time',
-                      trendText: '8min less',
-                      icon: Icons.graphic_eq,
-                      gradient: AppTheme.vibrationTherapyGradient,
-                      positiveTrend: false,
-                    ),
+                    _goodPostureStatItem(_todayStats),
+                    _trainingTimeStatItem(_todayStats),
+                    _therapyTimeStatItem(_todayStats),
+                    _sessionsStatItem(_todayStats),
+                    _trackedTimeStatItem(_todayStats),
                   ],
                 ),
               ),
@@ -1161,12 +1573,6 @@ class _HomeDashboardState extends State<HomeDashboard>
                     );
                   },
                 ),
-              ),
-              _kSectionSpacing,
-              _StaggeredFadeSlide(
-                controller: _controller,
-                delayMs: 800,
-                child: _RecentValuesCard(recentValues: _recentValues),
               ),
             ],
           ),
@@ -1777,37 +2183,6 @@ class _PostureGaugeCard extends StatelessWidget {
   }
 }
 
-class _RecentValuesCard extends StatelessWidget {
-  final String recentValues;
-
-  const _RecentValuesCard({required this.recentValues});
-
-  @override
-  Widget build(BuildContext context) {
-    return _SurfaceCard(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Recent Values',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            recentValues,
-            style: const TextStyle(fontSize: 12, color: _kMutedText),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _RecentSessionsCard extends StatelessWidget {
   final List<SessionData> sessions;
   final bool isLoading;
@@ -1872,21 +2247,18 @@ class _RecentSessionsCard extends StatelessWidget {
           ],
         ),
 
-        // Status banner: disconnect / syncing
+        // Status banner: disconnect
         if (isDeviceDisconnected) ...[
           const SizedBox(height: 12),
           _DisconnectedBanner(
             isReconnecting: isDeviceConnecting,
             onSyncNow: onSyncNow,
           ),
-        ] else if (isSyncing) ...[
-          const SizedBox(height: 12),
-          const _HomeSyncingBanner(),
         ],
 
         const SizedBox(height: 12),
 
-        if (isLoading)
+        if (isLoading && sessions.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 14),
             child: LinearProgressIndicator(minHeight: 3),
@@ -2013,44 +2385,6 @@ class _DisconnectedBanner extends StatelessWidget {
                     ),
                   ),
                 ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HomeSyncingBanner extends StatelessWidget {
-  const _HomeSyncingBanner();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
-      decoration: BoxDecoration(
-        color: _kPrimaryBlue.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        children: const [
-          SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.8,
-              valueColor: AlwaysStoppedAnimation<Color>(_kPrimaryBlue),
-            ),
-          ),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'Syncing offline sessions from your pod…',
-              style: TextStyle(
-                fontSize: 12,
-                color: _kPrimaryBlue,
-                fontWeight: FontWeight.w600,
               ),
             ),
           ),
@@ -2916,14 +3250,6 @@ class _ModeControlCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: _ModeButton(
-                    label: '5 min',
-                    selected: therapyDurationMinutes == 5,
-                    onTap: () => onTherapyDurationSelected(5),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _ModeButton(
                     label: '10 min',
                     selected: therapyDurationMinutes == 10,
                     onTap: () => onTherapyDurationSelected(10),
@@ -2935,6 +3261,14 @@ class _ModeControlCard extends StatelessWidget {
                     label: '20 min',
                     selected: therapyDurationMinutes == 20,
                     onTap: () => onTherapyDurationSelected(20),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _ModeButton(
+                    label: '30 min',
+                    selected: therapyDurationMinutes == 30,
+                    onTap: () => onTherapyDurationSelected(30),
                   ),
                 ),
               ],
@@ -3358,7 +3692,7 @@ class _CalibrationCard extends StatelessWidget {
           _kInnerSpacing,
           _GradientActionButton(
             label: 'Start Calibration',
-            gradient: AppTheme.trainingGradient,
+            gradient: AppTheme.buttonBackground,
             onTap: onCalibratePressed,
           ),
         ],
@@ -3788,8 +4122,15 @@ class _QuickModeCard extends StatelessWidget {
 class _StatsSummaryCard extends StatelessWidget {
   final List<_StatItemData> items;
   final int streakDays;
+  final bool streakTodayActive;
+  final Key? streakTileKey;
 
-  const _StatsSummaryCard({required this.items, this.streakDays = 12});
+  const _StatsSummaryCard({
+    required this.items,
+    this.streakDays = 0,
+    this.streakTodayActive = false,
+    this.streakTileKey,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -3804,7 +4145,14 @@ class _StatsSummaryCard extends StatelessWidget {
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (context, index) {
           if (index == 0) {
-            return SizedBox(width: 132, child: _StreakTile(days: streakDays));
+            return SizedBox(
+              key: streakTileKey,
+              width: 132,
+              child: _StreakTile(
+                days: streakDays,
+                todayActive: streakTodayActive,
+              ),
+            );
           }
           return SizedBox(
             width: 132,
@@ -3818,11 +4166,216 @@ class _StatsSummaryCard extends StatelessWidget {
 
 class _StreakTile extends StatefulWidget {
   final int days;
+  final bool todayActive;
 
-  const _StreakTile({required this.days});
+  const _StreakTile({required this.days, this.todayActive = true});
 
   @override
   State<_StreakTile> createState() => _StreakTileState();
+}
+
+class _StreakPalette {
+  const _StreakPalette(this.bgStart, this.bgMid, this.bgEnd, this.shadow);
+  final Color bgStart;
+  final Color bgMid;
+  final Color bgEnd;
+  final Color shadow;
+}
+
+const List<_StreakPalette> _kStreakPalettes = <_StreakPalette>[
+  _StreakPalette(
+    Color(0xFF60A5FA),
+    Color(0xFF3B82F6),
+    Color(0xFF1D4ED8),
+    Color(0xFF3B82F6),
+  ),
+  _StreakPalette(
+    Color(0xFF818CF8),
+    Color(0xFF6366F1),
+    Color(0xFF4338CA),
+    Color(0xFF6366F1),
+  ),
+  _StreakPalette(
+    Color(0xFFA78BFA),
+    Color(0xFF8B5CF6),
+    Color(0xFF6D28D9),
+    Color(0xFF8B5CF6),
+  ),
+  _StreakPalette(
+    Color(0xFFC084FC),
+    Color(0xFFA855F7),
+    Color(0xFF7E22CE),
+    Color(0xFFA855F7),
+  ),
+  _StreakPalette(
+    Color(0xFFE879F9),
+    Color(0xFFD946EF),
+    Color(0xFFA21CAF),
+    Color(0xFFD946EF),
+  ),
+  _StreakPalette(
+    Color(0xFFF472B6),
+    Color(0xFFEC4899),
+    Color(0xFFBE185D),
+    Color(0xFFEC4899),
+  ),
+  _StreakPalette(
+    Color(0xFFFB7185),
+    Color(0xFFF43F5E),
+    Color(0xFFBE123C),
+    Color(0xFFF43F5E),
+  ),
+  _StreakPalette(
+    Color(0xFFF87171),
+    Color(0xFFEF4444),
+    Color(0xFFB91C1C),
+    Color(0xFFEF4444),
+  ),
+  _StreakPalette(
+    Color(0xFFFB923C),
+    Color(0xFFF97316),
+    Color(0xFFC2410C),
+    Color(0xFFF97316),
+  ),
+  _StreakPalette(
+    Color(0xFFFBBF24),
+    Color(0xFFF59E0B),
+    Color(0xFFB45309),
+    Color(0xFFF59E0B),
+  ),
+  _StreakPalette(
+    Color(0xFFFACC15),
+    Color(0xFFEAB308),
+    Color(0xFFA16207),
+    Color(0xFFEAB308),
+  ),
+  _StreakPalette(
+    Color(0xFFA3E635),
+    Color(0xFF84CC16),
+    Color(0xFF4D7C0F),
+    Color(0xFF84CC16),
+  ),
+  _StreakPalette(
+    Color(0xFF4ADE80),
+    Color(0xFF22C55E),
+    Color(0xFF15803D),
+    Color(0xFF22C55E),
+  ),
+  _StreakPalette(
+    Color(0xFF34D399),
+    Color(0xFF10B981),
+    Color(0xFF047857),
+    Color(0xFF10B981),
+  ),
+  _StreakPalette(
+    Color(0xFF2DD4BF),
+    Color(0xFF14B8A6),
+    Color(0xFF0F766E),
+    Color(0xFF14B8A6),
+  ),
+  _StreakPalette(
+    Color(0xFF22D3EE),
+    Color(0xFF06B6D4),
+    Color(0xFF0E7490),
+    Color(0xFF06B6D4),
+  ),
+  _StreakPalette(
+    Color(0xFF38BDF8),
+    Color(0xFF0EA5E9),
+    Color(0xFF0369A1),
+    Color(0xFF0EA5E9),
+  ),
+  _StreakPalette(
+    Color(0xFF7DD3FC),
+    Color(0xFF38BDF8),
+    Color(0xFF0284C7),
+    Color(0xFF38BDF8),
+  ),
+  _StreakPalette(
+    Color(0xFF93C5FD),
+    Color(0xFF60A5FA),
+    Color(0xFF2563EB),
+    Color(0xFF60A5FA),
+  ),
+  _StreakPalette(
+    Color(0xFF6EE7B7),
+    Color(0xFF34D399),
+    Color(0xFF059669),
+    Color(0xFF34D399),
+  ),
+  _StreakPalette(
+    Color(0xFFFFD700),
+    Color(0xFFFFA500),
+    Color(0xFFFF8C00),
+    Color(0xFFFFA500),
+  ),
+  _StreakPalette(
+    Color(0xFFFF8A65),
+    Color(0xFFFF5722),
+    Color(0xFFD84315),
+    Color(0xFFFF5722),
+  ),
+  _StreakPalette(
+    Color(0xFFFF6B9D),
+    Color(0xFFE91E63),
+    Color(0xFFAD1457),
+    Color(0xFFE91E63),
+  ),
+  _StreakPalette(
+    Color(0xFFBA68C8),
+    Color(0xFF9C27B0),
+    Color(0xFF6A1B9A),
+    Color(0xFF9C27B0),
+  ),
+  _StreakPalette(
+    Color(0xFF7986CB),
+    Color(0xFF3F51B5),
+    Color(0xFF283593),
+    Color(0xFF3F51B5),
+  ),
+  _StreakPalette(
+    Color(0xFF4FC3F7),
+    Color(0xFF039BE5),
+    Color(0xFF01579B),
+    Color(0xFF039BE5),
+  ),
+  _StreakPalette(
+    Color(0xFF4DD0E1),
+    Color(0xFF00ACC1),
+    Color(0xFF006064),
+    Color(0xFF00ACC1),
+  ),
+  _StreakPalette(
+    Color(0xFF81C784),
+    Color(0xFF43A047),
+    Color(0xFF1B5E20),
+    Color(0xFF43A047),
+  ),
+  _StreakPalette(
+    Color(0xFFFFB74D),
+    Color(0xFFFB8C00),
+    Color(0xFFE65100),
+    Color(0xFFFB8C00),
+  ),
+  _StreakPalette(
+    Color(0xFFFFEB3B),
+    Color(0xFFFBC02D),
+    Color(0xFFF57F17),
+    Color(0xFFFBC02D),
+  ),
+];
+
+_StreakPalette _paletteForStreak(int days) {
+  if (days <= 0) {
+    return const _StreakPalette(
+      Color(0xFF94A3B8),
+      Color(0xFF64748B),
+      Color(0xFF334155),
+      Color(0xFF64748B),
+    );
+  }
+  // days=1 -> palette[0], wraps every 30.
+  return _kStreakPalettes[(days - 1) % _kStreakPalettes.length];
 }
 
 class _StreakTileState extends State<_StreakTile>
@@ -3861,23 +4414,24 @@ class _StreakTileState extends State<_StreakTile>
 
   @override
   Widget build(BuildContext context) {
+    final palette = _paletteForStreak(widget.days);
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (context, child) {
         return Container(
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
+            gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [Color(0xFF3B82F6), Color(0xFF2563EB), Color(0xFF1D4ED8)],
-              stops: [0.0, 0.5, 1.0],
+              colors: [palette.bgStart, palette.bgMid, palette.bgEnd],
+              stops: const [0.0, 0.5, 1.0],
             ),
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
-                color: const Color(
-                  0xFF3B82F6,
-                ).withValues(alpha: 0.25 + _glowAnim.value * 0.02),
+                color: palette.shadow.withValues(
+                  alpha: 0.25 + _glowAnim.value * 0.02,
+                ),
                 blurRadius: 16 + _glowAnim.value,
                 offset: const Offset(0, 6),
                 spreadRadius: _glowAnim.value * 0.3,
@@ -4068,6 +4622,412 @@ class _StreakFirePainter extends CustomPainter {
       oldDelegate.progress != progress;
 }
 
+enum _StreakPopupKind { increased, broken }
+
+class _StreakPopup extends StatefulWidget {
+  const _StreakPopup({
+    required this.stats,
+    required this.kind,
+    required this.resolveTarget,
+  });
+
+  final StreakStats stats;
+  final _StreakPopupKind kind;
+  final Rect? Function() resolveTarget;
+
+  @override
+  State<_StreakPopup> createState() => _StreakPopupState();
+}
+
+class _StreakPopupState extends State<_StreakPopup>
+    with TickerProviderStateMixin {
+  late final AnimationController _entrance;
+  late final AnimationController _exit;
+  late final AnimationController _loop;
+  late final Animation<double> _scale;
+  late final Animation<double> _fade;
+  final GlobalKey _cardKey = GlobalKey();
+  bool _dismissing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _entrance = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    )..forward();
+    _exit = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+    );
+    _loop = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..repeat(reverse: true);
+
+    _scale = CurvedAnimation(
+      parent: _entrance,
+      curve: Curves.elasticOut,
+      reverseCurve: Curves.easeIn,
+    );
+    _fade = CurvedAnimation(parent: _entrance, curve: Curves.easeOut);
+  }
+
+  @override
+  void dispose() {
+    _entrance.dispose();
+    _exit.dispose();
+    _loop.dispose();
+    super.dispose();
+  }
+
+  Future<void> _flyToTileAndClose() async {
+    if (_dismissing) return;
+    _dismissing = true;
+    await _exit.forward();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = _paletteForStreak(widget.stats.currentStreak);
+    final isIncreased = widget.kind == _StreakPopupKind.increased;
+    final days = widget.stats.currentStreak;
+
+    final isRecord = isIncreased && widget.stats.isNewRecord && days > 1;
+    final title = isIncreased
+        ? (days <= 1
+              ? 'Streak started!'
+              : isRecord
+              ? 'New personal best!'
+              : '$days-day streak!')
+        : 'Streak reset';
+    final subtitle = isIncreased
+        ? (days <= 1
+              ? 'One session in. Come back tomorrow to grow it.'
+              : isRecord
+              ? 'You just set a new record of $days days. Keep the flame alive.'
+              : 'You showed up ${days == 2 ? '2 days' : '$days days'} in a row. Best so far: ${widget.stats.highestStreak}.')
+        : 'You missed a day. Start a new streak today — every day counts.';
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _flyToTileAndClose();
+      },
+      child: Stack(
+        children: [
+          // Barrier tap — triggers the same fly-to-tile exit.
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _flyToTileAndClose,
+            ),
+          ),
+          Center(
+            child: AnimatedBuilder(
+              animation: Listenable.merge([_entrance, _exit]),
+              builder: (context, child) {
+                return _buildCard(palette, child!);
+              },
+              child: _buildCardContent(palette, title, subtitle),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCard(_StreakPalette palette, Widget child) {
+    // Entrance: fade + scale from 0.8 → 1.0.
+    // Exit: scale down + translate toward streak tile + fade.
+    final screen = MediaQuery.of(context).size;
+    final target = widget.resolveTarget();
+
+    // Card's current center (approx: screen center horizontally, near vertical middle).
+    final cardBox = _cardKey.currentContext?.findRenderObject();
+    Rect? cardRect;
+    if (cardBox is RenderBox && cardBox.attached) {
+      final tl = cardBox.localToGlobal(Offset.zero);
+      cardRect = tl & cardBox.size;
+    }
+
+    final exitT = Curves.easeInCubic.transform(_exit.value);
+    double dx = 0;
+    double dy = 0;
+    double exitScale = 1.0 - 0.95 * exitT;
+    if (target != null && cardRect != null) {
+      dx = (target.center.dx - cardRect.center.dx) * exitT;
+      dy = (target.center.dy - cardRect.center.dy) * exitT;
+      // Shrink card to roughly the tile's width.
+      final targetScale = (target.width / cardRect.width).clamp(0.05, 1.0);
+      exitScale = 1.0 + (targetScale - 1.0) * exitT;
+    } else {
+      // No target resolved — fall back to a plain shrink-to-nothing.
+      dx = 0;
+      dy = screen.height * 0.0 * exitT;
+    }
+
+    final entranceScale = Tween<double>(begin: 0.8, end: 1.0).evaluate(_scale);
+    final combinedScale = entranceScale * exitScale;
+    final opacity = (_fade.value * (1.0 - 0.9 * exitT)).clamp(0.0, 1.0);
+
+    return Opacity(
+      opacity: opacity,
+      child: Transform.translate(
+        offset: Offset(dx, dy),
+        child: Transform.scale(scale: combinedScale, child: child),
+      ),
+    );
+  }
+
+  Widget _buildCardContent(
+    _StreakPalette palette,
+    String title,
+    String subtitle,
+  ) {
+    final isIncreased = widget.kind == _StreakPopupKind.increased;
+    final days = widget.stats.currentStreak;
+    return Container(
+      key: _cardKey,
+      margin: const EdgeInsets.symmetric(horizontal: 28),
+      constraints: const BoxConstraints(maxWidth: 360),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: palette.shadow.withValues(alpha: 0.35),
+            blurRadius: 40,
+            offset: const Offset(0, 16),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Stack(
+          children: [
+            // Gradient header burst
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 180,
+              child: AnimatedBuilder(
+                animation: _loop,
+                builder: (context, _) {
+                  return CustomPaint(
+                    painter: _StreakBurstPainter(
+                      progress: _loop.value,
+                      palette: palette,
+                      dimmed: !isIncreased,
+                    ),
+                  );
+                },
+              ),
+            ),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 40),
+                // Animated fire
+                AnimatedBuilder(
+                  animation: _loop,
+                  builder: (context, _) {
+                    final flicker = math.sin(_loop.value * math.pi * 2) * 0.04;
+                    final pulse =
+                        1.0 + math.sin(_loop.value * math.pi * 2) * 0.06;
+                    return Transform.rotate(
+                      angle: flicker,
+                      child: Transform.scale(
+                        scale: isIncreased ? pulse : 0.92,
+                        child: SizedBox(
+                          width: 96,
+                          height: 110,
+                          child: CustomPaint(
+                            painter: _StreakFirePainter(progress: _loop.value),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 8),
+                // Big number
+                Text(
+                  '$days',
+                  style: TextStyle(
+                    fontSize: 68,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -2,
+                    height: 1.0,
+                    color: palette.bgEnd,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  days == 1 ? 'day' : 'days',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.2,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                if (widget.stats.highestStreak > 0) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: palette.bgStart.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.emoji_events_rounded,
+                          size: 14,
+                          color: palette.bgEnd,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Best: ${widget.stats.highestStreak}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: palette.bgEnd,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary,
+                      height: 1.2,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 28),
+                  child: Text(
+                    subtitle,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 14,
+                      height: 1.45,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: _flyToTileAndClose,
+                        child: Ink(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [palette.bgMid, palette.bgEnd],
+                            ),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 14),
+                            child: Text(
+                              'Keep going',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StreakBurstPainter extends CustomPainter {
+  _StreakBurstPainter({
+    required this.progress,
+    required this.palette,
+    required this.dimmed,
+  });
+
+  final double progress;
+  final _StreakPalette palette;
+  final bool dimmed;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final center = Offset(w / 2, h * 0.95);
+
+    // Soft radial glow
+    final glowAlpha = dimmed ? 0.18 : 0.32;
+    final glow = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          palette.bgMid.withValues(alpha: glowAlpha),
+          palette.bgMid.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromCircle(center: center, radius: w * 0.9));
+    canvas.drawRect(Rect.fromLTWH(0, 0, w, h), glow);
+
+    // Radiating rays
+    const rayCount = 12;
+    final rayPaint = Paint()
+      ..color = palette.bgStart.withValues(alpha: dimmed ? 0.08 : 0.22)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+    for (var i = 0; i < rayCount; i++) {
+      final t = i / rayCount;
+      final angle = math.pi + t * math.pi; // upper half fan
+      final len = w * (0.45 + 0.1 * math.sin(progress * math.pi * 2 + i));
+      final dx = math.cos(angle) * len;
+      final dy = math.sin(angle) * len;
+      canvas.drawLine(center, center + Offset(dx, dy), rayPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_StreakBurstPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+      oldDelegate.dimmed != dimmed ||
+      oldDelegate.palette != palette;
+}
+
 class _SummaryMetricTile extends StatelessWidget {
   final _StatItemData item;
 
@@ -4075,12 +5035,18 @@ class _SummaryMetricTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final trendColor = item.positiveTrend
-        ? AppTheme.successText
-        : AppTheme.destructive;
-    final trendBg = item.positiveTrend
-        ? AppTheme.successBg
-        : const Color(0xFFFEF2F2);
+    final Color trendColor;
+    final Color trendBg;
+    if (item.trendNeutral) {
+      trendColor = AppTheme.textSecondary;
+      trendBg = const Color(0xFFF1F5F9);
+    } else if (item.positiveTrend) {
+      trendColor = AppTheme.successText;
+      trendBg = AppTheme.successBg;
+    } else {
+      trendColor = AppTheme.destructive;
+      trendBg = const Color(0xFFFEF2F2);
+    }
 
     return _SurfaceCard(
       padding: const EdgeInsets.all(14),
@@ -4153,13 +5119,14 @@ class _SummaryMetricTile extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      item.positiveTrend
-                          ? Icons.arrow_drop_up_rounded
-                          : Icons.arrow_drop_down_rounded,
-                      size: 16,
-                      color: trendColor,
-                    ),
+                    if (!item.trendNeutral)
+                      Icon(
+                        item.positiveTrend
+                            ? Icons.arrow_drop_up_rounded
+                            : Icons.arrow_drop_down_rounded,
+                        size: 16,
+                        color: trendColor,
+                      ),
                     Flexible(
                       child: Text(
                         item.trendText,
@@ -4181,6 +5148,12 @@ class _SummaryMetricTile extends StatelessWidget {
       ),
     );
   }
+}
+
+class _DisplayValue {
+  const _DisplayValue(this.value, this.unit);
+  final String value;
+  final String unit;
 }
 
 class _QuickMode {
@@ -4214,7 +5187,10 @@ class _StatItemData {
     required this.icon,
     required this.gradient,
     this.positiveTrend = true,
+    this.trendNeutral = false,
   });
+
+  final bool trendNeutral;
 }
 
 class PostureGaugePainter extends CustomPainter {

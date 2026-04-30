@@ -93,6 +93,12 @@ class _PendingSession {
 
   bool get hasExtensions => expectedExtPackets > 0;
   bool get extensionsComplete => receivedExtPackets >= expectedExtPackets;
+
+  int get expectedTherapyPatternCount {
+    if (type != 'therapy') return 0;
+    if (totalEvents > 0) return totalEvents;
+    return ((durationSec + 59) ~/ 60).clamp(1, 30).toInt();
+  }
 }
 
 /// Pulls unsent posture/therapy sessions off the Aligneye wearable over BLE,
@@ -112,7 +118,7 @@ class _PendingSession {
 ///   byte 13:     ts_synced uint8
 ///   byte 14:     event count (posture pairs or therapy patterns)
 ///   byte 15:     extension packet count
-///   bytes 16-19: reserved zeros
+///   bytes 16-19: therapy fallback patterns when extension packets are absent
 ///
 /// **Extension packet** (20 bytes, sent after summary if event count > 0):
 ///   byte 0:      0xEE (extension marker)
@@ -324,6 +330,18 @@ class BleSessionSync {
       totalEvents: eventCount,
     );
 
+    if (typeStr == 'therapy' && !_pending!.hasExtensions) {
+      final playedSlots = ((durationSec + 59) ~/ 60).clamp(1, 4).toInt();
+      final fallback = <int>[
+        for (var i = 0; i < playedSlots; i++) bytes[16 + i],
+      ];
+      final hasFallback = fallback.any((pattern) => pattern != 0);
+      if (hasFallback) {
+        _pending!.therapyPatterns.addAll(fallback);
+        debugPrint('[SESSION] Summary therapy fallback=$fallback');
+      }
+    }
+
     if (_pending!.hasExtensions) {
       // ACK the summary index — this triggers the firmware to start streaming
       // extension packets. Upsert happens after the last extension lands.
@@ -360,9 +378,13 @@ class BleSessionSync {
         pending.postureEvents.add({'s': s, 'c': c});
       }
     } else {
-      // Therapy: up to 18 pattern bytes in bytes 2..19.
-      final remaining = pending.totalEvents - pending.therapyPatterns.length;
-      final countInPacket = remaining > 18 ? 18 : remaining;
+      // Therapy: the extension payload carries one pattern index per minute.
+      final remaining =
+          pending.expectedTherapyPatternCount - pending.therapyPatterns.length;
+      final payloadCapacity = bytes.length - 2;
+      final countInPacket = remaining > payloadCapacity
+          ? payloadCapacity
+          : remaining;
       for (var i = 0; i < countInPacket; i++) {
         pending.therapyPatterns.add(bytes[2 + i]);
       }
@@ -433,9 +455,17 @@ class BleSessionSync {
       final db = SessionDatabase.instance;
       final existingId = await _findExistingRowId(pending);
       if (existingId != null) {
-        await db.updateSession(existingId, row);
+        // Fetch-only policy: BLE sync is for *offline backlog* — sessions the
+        // phone never recorded live. If we already have a row for this
+        // start_ts, the live recorder is (or was) its source of truth, and
+        // the phone's copy is richer than firmware's flash snapshot (latest
+        // pattern events, continuous duration, etc). Overwriting it corrupts
+        // the in-progress session whenever BT drops and reconnects mid-way.
+        //
+        // Return ok=true so the caller still ACKs the device and drains its
+        // backlog without re-sending this packet next time.
         debugPrint(
-          '[SESSION] Local upsert (update) ✓ │ idx=${pending.index} '
+          '[SESSION] Skipping overwrite — local row exists │ idx=${pending.index} '
           'id=$existingId type=${pending.type}',
         );
       } else {

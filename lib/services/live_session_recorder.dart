@@ -35,7 +35,17 @@ class LiveSessionRecorder {
   bool _transitionInFlight = false;
   bool _enabled = false;
 
-  static const Duration _updateInterval = Duration(seconds: 5);
+  // Context the app stashes right before asking the device to start therapy.
+  // Consumed (and cleared) on the next THERAPY session start so that the
+  // row mirrors the user's selections on Supabase. Only meaningful for
+  // therapy; posture sessions ignore it.
+  _TherapyLaunchContext? _pendingTherapyContext;
+
+  // Cadence the recorder persists to SQLite during an active session. Short
+  // enough that the UI feels live (duration counter and pattern history
+  // update several times per firmware pattern advance) but long enough to
+  // avoid write amplification on the phone's flash.
+  static const Duration _updateInterval = Duration(milliseconds: 1500);
   static const Duration _minimumSessionDuration = Duration(seconds: 30);
 
   void start() {
@@ -49,9 +59,48 @@ class LiveSessionRecorder {
     if (_enabled == enabled) return;
     _enabled = enabled;
     debugPrint('LiveSessionRecorder: enabled=$enabled');
-    if (!enabled) {
-      unawaited(_finishActiveSession());
+    // Intentionally do NOT finish the active session when disabled. Disabling
+    // happens around BLE sync windows and during brief disconnects; forcing
+    // a "finish" here truncates the in-progress session's duration and opens
+    // the door for a duplicate row to appear on reconnect. The session gets
+    // finalized naturally when:
+    //   - the device reports a non-therapy/non-posture mode (mode switch), or
+    //   - the BLE connection drops (handled in _handleConnectionStatus).
+  }
+
+  /// Stash the therapy context picked on the app (target point, intensity,
+  /// planned duration) so the next therapy session started by the device
+  /// can mirror it on Supabase. Context expires after 60s to avoid sticking
+  /// stale values to an unrelated session.
+  void primeTherapyContext({
+    String? targetPoint,
+    int? intensityLevel,
+    int? plannedDurationMinutes,
+  }) {
+    _pendingTherapyContext = _TherapyLaunchContext(
+      capturedAt: DateTime.now(),
+      targetPoint: targetPoint,
+      intensityLevel: intensityLevel,
+      plannedDurationSec: plannedDurationMinutes == null
+          ? null
+          : plannedDurationMinutes * 60,
+    );
+    debugPrint(
+      'LiveSessionRecorder: primed therapy context '
+      'point=$targetPoint level=$intensityLevel dur=${plannedDurationMinutes}m',
+    );
+  }
+
+  _TherapyLaunchContext? _consumeTherapyContext() {
+    final ctx = _pendingTherapyContext;
+    if (ctx == null) return null;
+    if (DateTime.now().difference(ctx.capturedAt) >
+        const Duration(seconds: 60)) {
+      _pendingTherapyContext = null;
+      return null;
     }
+    _pendingTherapyContext = null;
+    return ctx;
   }
 
   Future<void> dispose() async {
@@ -66,7 +115,14 @@ class LiveSessionRecorder {
   void _handleConnectionStatus() {
     if (_deviceService.connectionStatus.value !=
         DeviceConnectionStatus.connected) {
-      unawaited(_finishActiveSession());
+      // BLE dropped. Persist whatever we have so far so the row on disk
+      // reflects the latest observed duration, but KEEP _active in memory.
+      // If the connection comes back while the session is still running,
+      // _handleReading will see it's the same in-memory session and keep
+      // appending — no data loss, no duplicate row.
+      if (_active != null) {
+        unawaited(_persistActiveSession(force: true));
+      }
     }
   }
 
@@ -130,6 +186,27 @@ class LiveSessionRecorder {
           ]
         : null;
 
+    // Therapy-only context. Prefer live device values, fall back to what the
+    // user selected in the app before starting. `primeTherapyContext` is the
+    // only path for the acupressure point — it's app-only.
+    final therapyCtx = type == 'therapy' ? _consumeTherapyContext() : null;
+    final initialIntensity = type == 'therapy'
+        ? ((reading.therapyIntensityLevel >= 1 &&
+                  reading.therapyIntensityLevel <= 3)
+              ? reading.therapyIntensityLevel
+              : therapyCtx?.intensityLevel)
+        : null;
+    final initialPlanSequence =
+        type == 'therapy' && reading.therapyPatternSequence.isNotEmpty
+        ? List<int>.from(reading.therapyPatternSequence)
+        : null;
+    final initialPlannedDurationSec = type == 'therapy'
+        ? therapyCtx?.plannedDurationSec
+        : null;
+    final initialTargetPoint = type == 'therapy'
+        ? therapyCtx?.targetPoint
+        : null;
+
     try {
       final db = SessionDatabase.instance;
       final existingId = await db.findExistingByStartTs(
@@ -153,6 +230,10 @@ class LiveSessionRecorder {
               ? <int>[initialPattern]
               : null,
           'therapy_pattern_events': initialPatternEvents,
+          'therapy_intensity_level': initialIntensity,
+          'therapy_target_point': initialTargetPoint,
+          'planned_duration_sec': initialPlannedDurationSec,
+          'planned_pattern_sequence': initialPlanSequence,
         });
         debugPrint(
           'LiveSessionRecorder: reusing existing $type session id=$id',
@@ -172,6 +253,10 @@ class LiveSessionRecorder {
               ? <int>[initialPattern]
               : null,
           'therapy_pattern_events': initialPatternEvents,
+          'therapy_intensity_level': initialIntensity,
+          'therapy_target_point': initialTargetPoint,
+          'planned_duration_sec': initialPlannedDurationSec,
+          'planned_pattern_sequence': initialPlanSequence,
           'sync_status': 0,
         });
         debugPrint('LiveSessionRecorder: inserted new $type session id=$id');
@@ -184,7 +269,11 @@ class LiveSessionRecorder {
         ..therapyPatternSequence = initialPattern != null
             ? [initialPattern]
             : []
-        ..therapyPatternEvents = initialPatternEvents ?? <Map<String, int>>[];
+        ..therapyPatternEvents = initialPatternEvents ?? <Map<String, int>>[]
+        ..therapyIntensityLevel = initialIntensity
+        ..therapyTargetPoint = initialTargetPoint
+        ..plannedDurationSec = initialPlannedDurationSec
+        ..plannedPatternSequence = initialPlanSequence;
       _activeSessionId.value = id;
       _lastBadPosture = type == 'posture' && reading.isBadPosture;
       _badPostureStartedAt = _lastBadPosture ? now : null;
@@ -255,6 +344,15 @@ class LiveSessionRecorder {
     if (active == null) return;
 
     if (active.type == 'therapy') {
+      if (reading.therapyIntensityLevel >= 1 &&
+          reading.therapyIntensityLevel <= 3) {
+        active.therapyIntensityLevel = reading.therapyIntensityLevel;
+      }
+      if (reading.therapyPatternSequence.isNotEmpty) {
+        active.plannedPatternSequence = List<int>.from(
+          reading.therapyPatternSequence,
+        );
+      }
       final pattern = _patternIndexFrom(reading.therapyPattern);
       if (pattern != null) {
         final elapsedSec = _durationFrom(
@@ -367,10 +465,26 @@ class LiveSessionRecorder {
               active.type == 'therapy' && therapyPatternEvents != null
               ? therapyPatternEvents
               : null,
+          'therapy_intensity_level': active.type == 'therapy'
+              ? active.therapyIntensityLevel
+              : null,
+          'therapy_target_point': active.type == 'therapy'
+              ? active.therapyTargetPoint
+              : null,
+          'planned_duration_sec': active.type == 'therapy'
+              ? active.plannedDurationSec
+              : null,
+          'planned_pattern_sequence': active.type == 'therapy'
+              ? active.plannedPatternSequence
+              : null,
         });
         _lastUpdateAt = now;
         _onSessionChanged?.call();
       } while (_dirtyWhileWriting);
+      // Kick the Supabase push after every local persist. The sync service
+      // debounces internally (500 ms) so rapid updates coalesce into one
+      // network round-trip.
+      SessionSyncService.instance.triggerSync();
     } catch (e) {
       debugPrint('LiveSessionRecorder: failed to update session: $e');
     } finally {
@@ -488,4 +602,27 @@ class _LiveSession {
   int? pendingSlouchOffsetSec;
   List<int> therapyPatternSequence = <int>[];
   List<Map<String, int>> therapyPatternEvents = <Map<String, int>>[];
+
+  // Therapy-only context mirrored on Supabase.
+  int? therapyIntensityLevel;
+  String? therapyTargetPoint;
+  int? plannedDurationSec;
+  List<int>? plannedPatternSequence;
+}
+
+/// Launch context provided by [TherapyPage] right before it asks the device
+/// to enter therapy mode. We keep it in the recorder until the first
+/// therapy reading arrives so the inserted row carries the user's choices.
+class _TherapyLaunchContext {
+  _TherapyLaunchContext({
+    required this.capturedAt,
+    required this.targetPoint,
+    required this.intensityLevel,
+    required this.plannedDurationSec,
+  });
+
+  final DateTime capturedAt;
+  final String? targetPoint;
+  final int? intensityLevel;
+  final int? plannedDurationSec;
 }

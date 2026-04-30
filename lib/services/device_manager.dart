@@ -38,6 +38,21 @@ class DeviceManager {
 
   BleSessionSync? _activeSync;
   LiveSessionRecorder? _liveSessionRecorder;
+
+  /// Forwarded to [LiveSessionRecorder.primeTherapyContext]. Called by the
+  /// therapy page right before firing the BLE command so the recorded row
+  /// mirrors the user's target point / intensity / planned duration.
+  void primeTherapyContext({
+    String? targetPoint,
+    int? intensityLevel,
+    int? plannedDurationMinutes,
+  }) {
+    _liveSessionRecorder?.primeTherapyContext(
+      targetPoint: targetPoint,
+      intensityLevel: intensityLevel,
+      plannedDurationMinutes: plannedDurationMinutes,
+    );
+  }
   StreamSubscription<SyncProgress>? _progressSub;
   bool _wired = false;
   bool _lastConnected = false;
@@ -54,26 +69,51 @@ class DeviceManager {
     )..start();
 
     // If already connected when init() runs (e.g. fast auto-reconnect
-    // completed before this wiring), kick off the sync flow now.
+    // completed before this wiring), kick off the sync flow now. The live
+    // recorder stays enabled — BLE sync is read-only for sessions that
+    // already exist locally (it can only insert new rows).
     if (_btManager.deviceService.connectionStatus.value ==
         DeviceConnectionStatus.connected) {
       debugPrint('DeviceManager: already connected at init — starting sync');
       _lastConnected = true;
-      _liveSessionRecorder?.setEnabled(false);
+      _liveSessionRecorder?.setEnabled(true);
       unawaited(_startSync());
     }
   }
 
-  void _onLiveSessionChanged() {
-    syncCompletedTick.value++;
-    debugPrint('DeviceManager: live session changed, tick=${syncCompletedTick.value}');
+  Timer? _tickThrottle;
+  bool _tickPending = false;
+  // We only want to re-run BLE sync when a session actually *ends* on the
+  // device (firmware writes it to flash then). For in-progress updates,
+  // ticking is enough — pages refresh from local SQLite.
+  String? _prevActiveSessionId;
 
-    // When a live session ends (mode switches from TRAINING/THERAPY to
-    // something else), the firmware stores the completed session to flash.
-    // Re-run sync so the app picks it up immediately instead of waiting
-    // for the next BLE reconnect.
-    if (_btManager.deviceService.connectionStatus.value ==
-        DeviceConnectionStatus.connected) {
+  void _onLiveSessionChanged() {
+    final currentActiveId = activeSessionId.value;
+    final sessionJustEnded = _prevActiveSessionId != null && currentActiveId == null;
+    _prevActiveSessionId = currentActiveId;
+
+    // Throttle the UI tick so the 1.5 s recorder cadence doesn't wake every
+    // listening page on every write. Pages still see a refresh within
+    // ~500 ms, which feels live without causing query thrash.
+    _tickPending = true;
+    _tickThrottle ??= Timer(const Duration(milliseconds: 500), () {
+      _tickThrottle = null;
+      if (!_tickPending) return;
+      _tickPending = false;
+      syncCompletedTick.value++;
+      debugPrint(
+        'DeviceManager: live session tick → ${syncCompletedTick.value}',
+      );
+    });
+
+    // Only pull from the device's flash when a session has *just ended*.
+    // During an in-progress session the phone is already the source of
+    // truth for the row, and running BLE sync every 1.5 s would thrash the
+    // link and corrupt the live stream.
+    if (sessionJustEnded &&
+        _btManager.deviceService.connectionStatus.value ==
+            DeviceConnectionStatus.connected) {
       _scheduleResync();
     }
   }
@@ -85,7 +125,7 @@ class DeviceManager {
     _resyncTimer = Timer(const Duration(seconds: 2), () {
       if (_btManager.deviceService.connectionStatus.value ==
           DeviceConnectionStatus.connected) {
-        debugPrint('DeviceManager: re-syncing after live session change');
+        debugPrint('DeviceManager: re-syncing after live session ended');
         unawaited(_startSync());
       }
     });
@@ -99,11 +139,17 @@ class DeviceManager {
 
     if (isConnected && !wasConnected) {
       debugPrint('DeviceManager: BLE connected — starting sync');
-      _liveSessionRecorder?.setEnabled(false);
+      // Keep the live recorder enabled: BLE sync runs on a separate
+      // characteristic and will never overwrite existing local rows, so live
+      // readings can flow into the recorder in parallel.
+      _liveSessionRecorder?.setEnabled(true);
       unawaited(_startSync());
     } else if (!isConnected && wasConnected) {
       debugPrint('DeviceManager: BLE disconnected');
-      _liveSessionRecorder?.setEnabled(false);
+      // Leave the recorder enabled. It gates itself on connection status and
+      // will simply skip readings until BLE comes back. Keeping it enabled
+      // means the in-memory _LiveSession survives the drop and resumes on
+      // reconnect with no duplicate row.
       _teardownSync();
     }
   }
@@ -114,7 +160,6 @@ class DeviceManager {
     final device = _btManager.deviceService.device;
     if (device == null) {
       debugPrint('DeviceManager: connected but no BluetoothDevice handle');
-      _liveSessionRecorder?.setEnabled(true);
       return;
     }
 
@@ -122,8 +167,7 @@ class DeviceManager {
 
     if (_btManager.deviceService.connectionStatus.value !=
         DeviceConnectionStatus.connected) {
-      debugPrint('DeviceManager: disconnected during delay, aborting sync — enabling live recorder');
-      _liveSessionRecorder?.setEnabled(true);
+      debugPrint('DeviceManager: disconnected during delay, aborting sync');
       return;
     }
 
@@ -135,26 +179,22 @@ class DeviceManager {
       (p) {
         lastProgress.value = p;
         if (p.complete) {
-          debugPrint('DeviceManager: sync complete — enabling live recorder');
+          debugPrint('DeviceManager: sync complete');
           isSyncing.value = false;
           syncCompletedTick.value++;
-          _liveSessionRecorder?.setEnabled(true);
         } else if (p.error != null) {
-          debugPrint('DeviceManager: sync error: ${p.error} — enabling live recorder');
+          debugPrint('DeviceManager: sync error: ${p.error}');
           isSyncing.value = false;
-          _liveSessionRecorder?.setEnabled(true);
         }
       },
       onError: (Object e) {
-        debugPrint('DeviceManager: sync stream error: $e — enabling live recorder');
+        debugPrint('DeviceManager: sync stream error: $e');
         isSyncing.value = false;
-        _liveSessionRecorder?.setEnabled(true);
       },
       onDone: () {
         if (isSyncing.value) {
-          debugPrint('DeviceManager: sync stream done while still syncing — enabling live recorder');
+          debugPrint('DeviceManager: sync stream done while still syncing');
           isSyncing.value = false;
-          _liveSessionRecorder?.setEnabled(true);
         }
       },
     );
@@ -162,9 +202,8 @@ class DeviceManager {
     try {
       await sync.startSync();
     } catch (e) {
-      debugPrint('DeviceManager: startSync threw: $e — enabling live recorder');
+      debugPrint('DeviceManager: startSync threw: $e');
       isSyncing.value = false;
-      _liveSessionRecorder?.setEnabled(true);
     }
   }
 
@@ -190,6 +229,8 @@ class DeviceManager {
       );
       _wired = false;
     }
+    _tickThrottle?.cancel();
+    _tickThrottle = null;
     await _teardownSync();
     await _liveSessionRecorder?.dispose();
     _liveSessionRecorder = null;

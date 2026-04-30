@@ -30,7 +30,7 @@ class AppTheme {
   );
 
   static const LinearGradient trainingGradient = LinearGradient(
-    colors: [Color(0xFFC084FC), Color(0xFFEC4899)],
+    colors: [Color(0xFF2DD4BF), Color(0xFF10B981)],
   );
 
   static const LinearGradient therapyGradient = LinearGradient(
@@ -42,11 +42,15 @@ class AppTheme {
   );
 
   static const LinearGradient alignWalkGradient = LinearGradient(
-    colors: [Color(0xFF2DD4BF), Color(0xFF10B981)],
+    colors: [Color(0xFFC084FC), Color(0xFFEC4899)],
   );
 
   static const LinearGradient ridingGradient = LinearGradient(
     colors: [Color(0xFFFBBF24), Color(0xFFF97316)],
+  );
+
+  static const LinearGradient buttonBackground = LinearGradient(
+    colors: [Color(0xFFC084FC), Color(0xFFEC4899)],
   );
 
   // ── Status Colors ───────────────────────────────────────────────────

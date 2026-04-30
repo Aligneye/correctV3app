@@ -27,6 +27,14 @@ create table sessions (
   posture_events   jsonb,
   therapy_patterns jsonb,
   therapy_pattern_events jsonb,
+  -- Therapy session context captured from the app at start time.
+  therapy_intensity_level integer check (
+    therapy_intensity_level is null
+    or therapy_intensity_level between 1 and 3
+  ),
+  therapy_target_point     text,     -- e.g. 'GV14', 'GV13'
+  planned_duration_sec     integer,  -- user-selected duration (10/20/30 min in seconds)
+  planned_pattern_sequence jsonb,    -- full pattern plan the device scheduled
   created_at       timestamptz default now()
 );
 
@@ -36,4 +44,27 @@ create index on sessions (user_id, start_ts desc);
 alter table sessions enable row level security;
 
 create policy "own sessions" on sessions
+  for all using (auth.uid() = user_id);
+
+-- Per-user streak state. One row per user.
+--
+-- current_streak and highest_streak are both derivable from the `sessions`
+-- table (consecutive active "streak days" using a 6 AM local boundary), but
+-- we persist them here so:
+--   1. the home page can render instantly without aggregating sessions
+--   2. highest_streak survives even if old sessions are purged locally
+--
+-- Writes happen from the client after computing the current streak; the
+-- client is trusted because RLS scopes everything to auth.uid().
+create table user_streaks (
+  user_id         uuid primary key references auth.users,
+  current_streak  integer not null default 0,
+  highest_streak  integer not null default 0,
+  last_active_day date,
+  updated_at      timestamptz default now()
+);
+
+alter table user_streaks enable row level security;
+
+create policy "own streak" on user_streaks
   for all using (auth.uid() = user_id);

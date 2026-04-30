@@ -17,8 +17,11 @@ class SessionSyncService {
   Timer? _debounceTimer;
   bool _syncing = false;
 
-  static const Duration _interval = Duration(seconds: 30);
-  static const Duration _debounce = Duration(seconds: 2);
+  // Faster cadence so Supabase mirrors device state within a few seconds of
+  // each local write. The service is idempotent (dedupes by remote_id) and
+  // cheap — only dirty rows are pushed — so tight polling is safe.
+  static const Duration _interval = Duration(seconds: 8);
+  static const Duration _debounce = Duration(milliseconds: 500);
 
   SupabaseClient get _client => Supabase.instance.client;
 
@@ -79,6 +82,10 @@ class SessionSyncService {
         'posture_events': row['posture_events'],
         'therapy_patterns': row['therapy_patterns'],
         'therapy_pattern_events': row['therapy_pattern_events'],
+        'therapy_intensity_level': row['therapy_intensity_level'],
+        'therapy_target_point': row['therapy_target_point'],
+        'planned_duration_sec': row['planned_duration_sec'],
+        'planned_pattern_sequence': row['planned_pattern_sequence'],
       };
 
       try {

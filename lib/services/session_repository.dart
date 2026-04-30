@@ -67,6 +67,172 @@ class SessionRepository {
     };
   }
 
+  /// Today-vs-yesterday summary driven by local `sessions` rows (Supabase
+  /// mirrors them). No separate daily-score table needed.
+  Future<TodayStats> fetchTodayStats() async {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final tomorrowStart = todayStart.add(const Duration(days: 1));
+    final yesterdayStart = todayStart.subtract(const Duration(days: 1));
+
+    final todayRows = await _fetchRowsBetween(todayStart, tomorrowStart);
+    final yesterdayRows = await _fetchRowsBetween(yesterdayStart, todayStart);
+
+    final today = _summarizeDay(todayRows);
+    final yesterday = _summarizeDay(yesterdayRows);
+
+    return TodayStats(
+      todayPct: today.postureDurationSec > 0 ? today.posturePct : 0,
+      todayPostureDurationSec: today.postureDurationSec,
+      todayTherapyDurationSec: today.therapyDurationSec,
+      todaySessionCount: today.sessionCount,
+      todayTrackedSec: today.trackedSec,
+      yesterdayPct: yesterday.postureDurationSec > 0
+          ? yesterday.posturePct
+          : 0,
+      yesterdayHasPostureData: yesterday.postureDurationSec > 0,
+      yesterdayPostureDurationSec: yesterday.postureDurationSec,
+      yesterdayTherapyDurationSec: yesterday.therapyDurationSec,
+      yesterdaySessionCount: yesterday.sessionCount,
+      yesterdayTrackedSec: yesterday.trackedSec,
+      yesterdayHasTrackedData: yesterday.trackedSec > 0,
+    );
+  }
+
+  _DaySummary _summarizeDay(List<Map<String, dynamic>> rows) {
+    int postureDur = 0;
+    int postureWrong = 0;
+    int therapyDur = 0;
+    int trackedSec = 0;
+    int sessionCount = 0;
+    for (final row in rows) {
+      final dur = _asInt(row['duration_sec']);
+      if (dur <= 0) continue;
+      sessionCount++;
+      trackedSec += dur;
+      final type = row['type']?.toString();
+      if (type == 'posture') {
+        postureDur += dur;
+        postureWrong += _asInt(row['wrong_dur_sec']);
+      } else if (type == 'therapy') {
+        therapyDur += dur;
+      }
+    }
+    final pct = postureDur > 0
+        ? (100 - (postureWrong / postureDur * 100)).round().clamp(0, 100)
+        : 0;
+    return _DaySummary(
+      posturePct: pct,
+      postureDurationSec: postureDur,
+      therapyDurationSec: therapyDur,
+      trackedSec: trackedSec,
+      sessionCount: sessionCount,
+    );
+  }
+
+  /// Current streak: consecutive "streak days" (6 AM boundary) with at least
+  /// one completed session. Sessions between 00:00 and 05:59:59 are credited
+  /// to the previous streak day.
+  ///
+  /// Returns (currentStreak, todayActive):
+  ///   - currentStreak: number of consecutive active streak days ending at
+  ///     today's (or yesterday's, if today has no activity yet) streak day.
+  ///   - todayActive: whether the current streak day already has a session.
+  Future<StreakStats> fetchStreakStats() async {
+    final now = DateTime.now();
+    // Pull a generous window — cheap locally, avoids edge cases for long
+    // streaks. 400 days covers >1 year of continuous use.
+    final windowStart = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(const Duration(days: 400));
+    final rows = await _fetchRowsBetween(
+      windowStart,
+      now.add(const Duration(days: 1)),
+    );
+
+    final activeDays = <DateTime>{};
+    for (final row in rows) {
+      final dur = _asInt(row['duration_sec']);
+      if (dur <= 0) continue;
+      final ts = _parseTs(row['start_ts'])?.toLocal();
+      if (ts == null) continue;
+      activeDays.add(_streakDayOf(ts));
+    }
+
+    final todayStreakDay = _streakDayOf(now);
+    final todayActive = activeDays.contains(todayStreakDay);
+
+    // Count back from today (or yesterday if today not active yet).
+    DateTime cursor = todayActive
+        ? todayStreakDay
+        : todayStreakDay.subtract(const Duration(days: 1));
+    int streak = 0;
+    while (activeDays.contains(cursor)) {
+      streak++;
+      cursor = cursor.subtract(const Duration(days: 1));
+    }
+
+    final highest = await _syncStreakToSupabase(
+      currentStreak: streak,
+      todayStreakDay: todayStreakDay,
+    );
+
+    return StreakStats(
+      currentStreak: streak,
+      highestStreak: highest,
+      todayActive: todayActive,
+      todayStreakDay: todayStreakDay,
+    );
+  }
+
+  /// Upserts the user's current streak into `user_streaks`, bumping
+  /// `highest_streak` when the current run exceeds it. Returns the stored
+  /// highest (or local fallback on network failure).
+  Future<int> _syncStreakToSupabase({
+    required int currentStreak,
+    required DateTime todayStreakDay,
+  }) async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return currentStreak;
+
+    try {
+      final existing = await _client
+          .from('user_streaks')
+          .select('highest_streak')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+      final previousHighest =
+          (existing?['highest_streak'] as num?)?.toInt() ?? 0;
+      final newHighest = currentStreak > previousHighest
+          ? currentStreak
+          : previousHighest;
+
+      await _client.from('user_streaks').upsert({
+        'user_id': userId,
+        'current_streak': currentStreak,
+        'highest_streak': newHighest,
+        'last_active_day':
+            '${todayStreakDay.year.toString().padLeft(4, '0')}-${todayStreakDay.month.toString().padLeft(2, '0')}-${todayStreakDay.day.toString().padLeft(2, '0')}',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'user_id');
+
+      return newHighest;
+    } catch (e) {
+      debugPrint('SessionRepository: _syncStreakToSupabase failed: $e');
+      return currentStreak;
+    }
+  }
+
+  /// Normalizes a local timestamp to its "streak day" (the calendar date at
+  /// 6 AM local). Anything before 6 AM rolls back to the prior date.
+  DateTime _streakDayOf(DateTime localTs) {
+    final shifted = localTs.subtract(const Duration(hours: 6));
+    return DateTime(shifted.year, shifted.month, shifted.day);
+  }
+
   /// Daily good-posture % for the last [days] calendar days (oldest first).
   Future<List<double>> fetchDailyScores(int days) async {
     final now = DateTime.now();
@@ -486,6 +652,83 @@ class SessionRepository {
     if (diffDays == 1) return 'Yesterday · $hhmm';
     return '${_formatShortDate(ts)} · $hhmm';
   }
+}
+
+class StreakStats {
+  const StreakStats({
+    required this.currentStreak,
+    required this.highestStreak,
+    required this.todayActive,
+    required this.todayStreakDay,
+  });
+
+  final int currentStreak;
+  final int highestStreak;
+  final bool todayActive;
+  final DateTime todayStreakDay;
+
+  bool get isNewRecord =>
+      currentStreak > 0 && currentStreak >= highestStreak;
+}
+
+class TodayStats {
+  const TodayStats({
+    required this.todayPct,
+    required this.todayPostureDurationSec,
+    required this.todayTherapyDurationSec,
+    required this.todaySessionCount,
+    required this.todayTrackedSec,
+    required this.yesterdayPct,
+    required this.yesterdayHasPostureData,
+    required this.yesterdayPostureDurationSec,
+    required this.yesterdayTherapyDurationSec,
+    required this.yesterdaySessionCount,
+    required this.yesterdayTrackedSec,
+    required this.yesterdayHasTrackedData,
+  });
+
+  final int todayPct;
+  final int todayPostureDurationSec;
+  final int todayTherapyDurationSec;
+  final int todaySessionCount;
+  final int todayTrackedSec;
+  final int yesterdayPct;
+  final bool yesterdayHasPostureData;
+  final int yesterdayPostureDurationSec;
+  final int yesterdayTherapyDurationSec;
+  final int yesterdaySessionCount;
+  final int yesterdayTrackedSec;
+  final bool yesterdayHasTrackedData;
+
+  bool get hasTodayPostureData => todayPostureDurationSec > 0;
+  bool get hasTodayTherapyData => todayTherapyDurationSec > 0;
+  bool get hasTodayTrackedData => todayTrackedSec > 0;
+  bool get hasTodaySessions => todaySessionCount > 0;
+  bool get yesterdayHasTherapyData => yesterdayTherapyDurationSec > 0;
+  bool get yesterdayHasSessions => yesterdaySessionCount > 0;
+  int get postureDeltaVsYesterday => todayPct - yesterdayPct;
+  int get trackedDeltaSecVsYesterday => todayTrackedSec - yesterdayTrackedSec;
+  int get therapyDeltaSecVsYesterday =>
+      todayTherapyDurationSec - yesterdayTherapyDurationSec;
+  int get trainingDeltaSecVsYesterday =>
+      todayPostureDurationSec - yesterdayPostureDurationSec;
+  int get sessionCountDeltaVsYesterday =>
+      todaySessionCount - yesterdaySessionCount;
+}
+
+class _DaySummary {
+  const _DaySummary({
+    required this.posturePct,
+    required this.postureDurationSec,
+    required this.therapyDurationSec,
+    required this.trackedSec,
+    required this.sessionCount,
+  });
+  final int posturePct;
+  final int postureDurationSec;
+  final int therapyDurationSec;
+  final int trackedSec;
+  final int sessionCount;
 }
 
 class _Aggregate {

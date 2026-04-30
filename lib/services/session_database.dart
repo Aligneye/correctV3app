@@ -23,7 +23,7 @@ class SessionDatabase {
     final path = join(dbPath, 'aligneye_sessions.db');
     _db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE sessions (
@@ -39,6 +39,10 @@ class SessionDatabase {
             posture_events  TEXT,
             therapy_patterns TEXT,
             therapy_pattern_events TEXT,
+            therapy_intensity_level  INTEGER,
+            therapy_target_point     TEXT,
+            planned_duration_sec     INTEGER,
+            planned_pattern_sequence TEXT,
             created_at      TEXT NOT NULL,
             sync_status     INTEGER NOT NULL DEFAULT 0,
             remote_id       TEXT
@@ -52,6 +56,20 @@ class SessionDatabase {
         if (oldVersion < 2) {
           await db.execute(
             'ALTER TABLE sessions ADD COLUMN therapy_pattern_events TEXT',
+          );
+        }
+        if (oldVersion < 3) {
+          await db.execute(
+            'ALTER TABLE sessions ADD COLUMN therapy_intensity_level INTEGER',
+          );
+          await db.execute(
+            'ALTER TABLE sessions ADD COLUMN therapy_target_point TEXT',
+          );
+          await db.execute(
+            'ALTER TABLE sessions ADD COLUMN planned_duration_sec INTEGER',
+          );
+          await db.execute(
+            'ALTER TABLE sessions ADD COLUMN planned_pattern_sequence TEXT',
           );
         }
       },
@@ -89,6 +107,10 @@ class SessionDatabase {
       'posture_events': _encodeJson(row['posture_events']),
       'therapy_patterns': _encodeJson(row['therapy_patterns']),
       'therapy_pattern_events': _encodeJson(row['therapy_pattern_events']),
+      'therapy_intensity_level': row['therapy_intensity_level'],
+      'therapy_target_point': row['therapy_target_point'],
+      'planned_duration_sec': row['planned_duration_sec'],
+      'planned_pattern_sequence': _encodeJson(row['planned_pattern_sequence']),
       'created_at': row['created_at'] as String? ?? now,
       'sync_status': row['sync_status'] as int? ?? 0,
       'remote_id': row['remote_id'] as String?,
@@ -124,6 +146,20 @@ class SessionDatabase {
     if (fields.containsKey('therapy_pattern_events')) {
       update['therapy_pattern_events'] = _encodeJson(
         fields['therapy_pattern_events'],
+      );
+    }
+    if (fields.containsKey('therapy_intensity_level')) {
+      update['therapy_intensity_level'] = fields['therapy_intensity_level'];
+    }
+    if (fields.containsKey('therapy_target_point')) {
+      update['therapy_target_point'] = fields['therapy_target_point'];
+    }
+    if (fields.containsKey('planned_duration_sec')) {
+      update['planned_duration_sec'] = fields['planned_duration_sec'];
+    }
+    if (fields.containsKey('planned_pattern_sequence')) {
+      update['planned_pattern_sequence'] = _encodeJson(
+        fields['planned_pattern_sequence'],
       );
     }
     await _preserveRicherTherapyTimeline(db, id, update);
@@ -220,6 +256,10 @@ class SessionDatabase {
       'posture_events': remoteRow['posture_events'],
       'therapy_patterns': remoteRow['therapy_patterns'],
       'therapy_pattern_events': remoteRow['therapy_pattern_events'],
+      'therapy_intensity_level': remoteRow['therapy_intensity_level'],
+      'therapy_target_point': remoteRow['therapy_target_point'],
+      'planned_duration_sec': remoteRow['planned_duration_sec'],
+      'planned_pattern_sequence': remoteRow['planned_pattern_sequence'],
       'created_at': remoteRow['created_at']?.toString(),
       'sync_status': 1,
       'remote_id': remoteId,
@@ -348,6 +388,15 @@ class SessionDatabase {
         result['therapy_pattern_events'] = null;
       }
     }
+    if (row['planned_pattern_sequence'] is String) {
+      try {
+        result['planned_pattern_sequence'] = jsonDecode(
+          row['planned_pattern_sequence'] as String,
+        );
+      } catch (_) {
+        result['planned_pattern_sequence'] = null;
+      }
+    }
     return result;
   }
 
@@ -366,6 +415,12 @@ class SessionDatabase {
       'therapy_patterns': _encodeJson(remoteRow['therapy_patterns']),
       'therapy_pattern_events': _encodeJson(
         remoteRow['therapy_pattern_events'],
+      ),
+      'therapy_intensity_level': remoteRow['therapy_intensity_level'],
+      'therapy_target_point': remoteRow['therapy_target_point'],
+      'planned_duration_sec': remoteRow['planned_duration_sec'],
+      'planned_pattern_sequence': _encodeJson(
+        remoteRow['planned_pattern_sequence'],
       ),
       'sync_status': syncStatus,
       if (remoteId != null) 'remote_id': remoteId,

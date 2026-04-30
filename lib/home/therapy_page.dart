@@ -2,6 +2,12 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'package:correctv1/bluetooth/aligneye_device_service.dart';
+import 'package:correctv1/bluetooth/bluetooth_service_manager.dart';
+import 'package:correctv1/home/ongoing_therapy_page.dart';
+import 'package:correctv1/services/device_manager.dart';
 
 class TherapyPage extends StatefulWidget {
   const TherapyPage({super.key});
@@ -10,10 +16,20 @@ class TherapyPage extends StatefulWidget {
   State<TherapyPage> createState() => _TherapyPageState();
 }
 
+/// Keys for the last-used therapy selections. Persisted across app launches
+/// so the user doesn't have to repick their preferred intensity/duration/point
+/// every time they open the therapy page.
+const String _kPrefTherapyIntensity = 'therapy_last_intensity';
+const String _kPrefTherapyDurationMinutes = 'therapy_last_duration_min';
+const String _kPrefTherapyPointId = 'therapy_last_point_id';
+
 class _TherapyPageState extends State<TherapyPage>
     with TickerProviderStateMixin {
   late final AnimationController _entryController;
   late final AnimationController _pulseController;
+
+  final AlignEyeDeviceService _deviceService =
+      BluetoothServiceManager().deviceService;
 
   double _intensity = 2;
   int _durationMinutes = 10;
@@ -48,6 +64,42 @@ class _TherapyPageState extends State<TherapyPage>
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat();
+    _restoreLastSelections();
+  }
+
+  Future<void> _restoreLastSelections() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final intensity = prefs.getInt(_kPrefTherapyIntensity);
+      final durationMin = prefs.getInt(_kPrefTherapyDurationMinutes);
+      final pointId = prefs.getString(_kPrefTherapyPointId);
+      if (!mounted) return;
+      setState(() {
+        if (intensity != null && intensity >= 1 && intensity <= 3) {
+          _intensity = intensity.toDouble();
+        }
+        if (durationMin != null && const {10, 20, 30}.contains(durationMin)) {
+          _durationMinutes = durationMin;
+        }
+        if (pointId != null && _points.any((p) => p.id == pointId)) {
+          _selectedPointId = pointId;
+        }
+      });
+    } catch (_) {
+      // Persistence failures aren't worth disturbing the user — the defaults
+      // in the state declaration still apply.
+    }
+  }
+
+  Future<void> _persistSelections() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kPrefTherapyIntensity, _intensity.round().clamp(1, 3));
+      await prefs.setInt(_kPrefTherapyDurationMinutes, _durationMinutes);
+      await prefs.setString(_kPrefTherapyPointId, _selectedPointId);
+    } catch (_) {
+      // Non-critical; next change will retry.
+    }
   }
 
   @override
@@ -60,11 +112,95 @@ class _TherapyPageState extends State<TherapyPage>
   void _selectPoint(String id) {
     HapticFeedback.selectionClick();
     setState(() => _selectedPointId = id);
+    _persistSelections();
   }
 
   void _toggleTherapy() {
     HapticFeedback.mediumImpact();
-    setState(() => _isRunning = !_isRunning);
+    if (_isRunning) {
+      setState(() => _isRunning = false);
+      return;
+    }
+    _startTherapySession();
+  }
+
+  Future<void> _startTherapySession() async {
+    final selectedPoint = _points.firstWhere(
+      (point) => point.id == _selectedPointId,
+      orElse: () => _points.first,
+    );
+
+    if (_deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.connected) {
+      _showConnectDeviceSnack();
+      return;
+    }
+
+    final intensityLevel = _intensity.round().clamp(1, 3);
+
+    // Stash the app-only context (target point) plus mirrors of what we're
+    // about to tell the device, so the row Supabase receives reflects the
+    // user's choices even if the device is slow to echo them back.
+    DeviceManager().primeTherapyContext(
+      targetPoint: selectedPoint.id,
+      intensityLevel: intensityLevel,
+      plannedDurationMinutes: _durationMinutes,
+    );
+
+    final sent = await _deviceService.sendTherapyStart(
+      durationMinutes: _durationMinutes,
+      intensityLevel: intensityLevel,
+    );
+    if (!mounted) return;
+
+    if (!sent) {
+      _showConnectDeviceSnack(message: 'Could not start therapy on device.');
+      return;
+    }
+
+    setState(() => _isRunning = true);
+
+    await Navigator.of(context).push(
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 320),
+        reverseTransitionDuration: const Duration(milliseconds: 260),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            OngoingTherapyPage(
+              deviceService: _deviceService,
+              durationMinutes: _durationMinutes,
+              intensity: intensityLevel,
+              targetPointName: selectedPoint.name,
+            ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.97, end: 1)
+                  .chain(CurveTween(curve: Curves.easeOutCubic))
+                  .animate(animation),
+              child: child,
+            ),
+          );
+        },
+      ),
+    );
+
+    if (!mounted) return;
+    setState(() => _isRunning = false);
+  }
+
+  void _showConnectDeviceSnack({String? message}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: const Color(0xFF1F2937),
+        content: Text(
+          message ?? 'Connect your Aligneye pod to start therapy.',
+          style: const TextStyle(color: Colors.white),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   @override
@@ -181,6 +317,7 @@ class _TherapyPageState extends State<TherapyPage>
                             HapticFeedback.selectionClick();
                             setState(() => _intensity = value);
                           },
+                          onChangeEnd: (_) => _persistSelections(),
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -239,6 +376,7 @@ class _TherapyPageState extends State<TherapyPage>
                                   onTap: () {
                                     HapticFeedback.selectionClick();
                                     setState(() => _durationMinutes = minutes);
+                                    _persistSelections();
                                   },
                                 ),
                               ),

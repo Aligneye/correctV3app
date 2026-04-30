@@ -11,7 +11,7 @@
 .svn/
 .swiftpm/
 migrate_working_dir/
-.claude/
+.claude\settings.json
 # IntelliJ related
 *.iml
 *.ipr
@@ -47,4 +47,4 @@ app.*.map.json
 # Android release signing
 /android/key.properties
 /android/*.jks
-/android/*.keystore
+/android/*.keystore.claude/
