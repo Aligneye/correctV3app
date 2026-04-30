@@ -69,6 +69,10 @@ class PostureReading {
   /// Index inside [therapyPatternSequence] of the currently-playing pattern.
   /// -1 when unknown / not in therapy.
   final int therapyCurrentPatternIndex;
+  /// Total patterns scheduled for this session. Firmware publishes this via
+  /// `t_total`; used as a fallback length when `t_seq` is missing so the
+  /// pager can still render a placeholder card per slot.
+  final int therapyTotalPatterns;
   final int liveSessionId;
   final int liveSessionElapsedSeconds;
   final int liveSessionStartEpoch;
@@ -104,6 +108,7 @@ class PostureReading {
     required this.therapyIntensityLevel,
     required this.therapyPatternSequence,
     required this.therapyCurrentPatternIndex,
+    required this.therapyTotalPatterns,
     required this.liveSessionId,
     required this.liveSessionElapsedSeconds,
     required this.liveSessionStartEpoch,
@@ -184,6 +189,7 @@ class PostureReading {
         if (raw is num) return raw.toInt();
         return int.tryParse(raw.toString()) ?? -1;
       }(),
+      therapyTotalPatterns: toInt(json['t_total'] ?? json['therapy_total_patterns']),
       liveSessionId: toInt(json['s_id'] ?? json['session_id']),
       liveSessionElapsedSeconds: toInt(
         json['s_elap'] ?? json['session_elapsed_sec'],
@@ -224,6 +230,57 @@ class AlignEyeDeviceService {
   );
   final isAutoConnectionAttempt = ValueNotifier<bool>(false);
   final currentReading = ValueNotifier<PostureReading?>(null);
+
+  /// Sticky cache of the latest therapy pattern plan + live index. Firmware
+  /// publishes `t_seq` / `t_cur` only periodically (not every JSON frame),
+  /// so a page re-entering therapy mid-session would otherwise see an empty
+  /// plan for several seconds and flash the "Getting your therapy session
+  /// ready…" placeholder. Caching here lets the ongoing page seed itself
+  /// instantly from the last known plan.
+  List<int> latestTherapyPatternSequence = const [];
+  int latestTherapyCurrentPatternIndex = -1;
+  int latestTherapyTotalPatterns = 0;
+  String latestTherapyPatternName = '';
+  String latestTherapyNextPatternName = '';
+
+  /// Single source of truth for the therapy countdown so every UI surface
+  /// (home mini card + immersive ongoing page) reads the same number.
+  /// [_therapyRemainingAnchorSec] holds the remaining seconds *at the
+  /// moment firmware reported them*, and [_therapyAnchorAt] is the wall
+  /// clock for that report. Consumers derive live remaining via
+  /// [therapyRemainingSecondsNow] which just subtracts elapsed wall time.
+  int _therapyRemainingAnchorSec = -1;
+  int _therapyElapsedAnchorSec = 0;
+  DateTime? _therapyAnchorAt;
+
+  /// Latest firmware-reported remaining seconds, extrapolated to "right now"
+  /// by the wall clock. Returns -1 when no therapy frame has been seen yet.
+  int get therapyRemainingSecondsNow {
+    final anchor = _therapyAnchorAt;
+    if (anchor == null || _therapyRemainingAnchorSec < 0) return -1;
+    final elapsed = DateTime.now().difference(anchor).inSeconds;
+    final value = _therapyRemainingAnchorSec - elapsed;
+    return value < 0 ? 0 : value;
+  }
+
+  /// Mirror of [therapyRemainingSecondsNow] for elapsed-side progress.
+  int get therapyElapsedSecondsNow {
+    final anchor = _therapyAnchorAt;
+    if (anchor == null) return 0;
+    final elapsed = DateTime.now().difference(anchor).inSeconds;
+    final value = _therapyElapsedAnchorSec + elapsed;
+    return value < 0 ? 0 : value;
+  }
+
+  /// Session-elapsed value at which the currently-playing pattern started.
+  /// Updated whenever firmware reports a different pattern name. Combined
+  /// with [therapyElapsedSecondsNow] this gives a "pattern elapsed" clock
+  /// that both the mini home card and the immersive page can share.
+  int _currentPatternStartElapsedSec = 0;
+  int get therapyPatternElapsedSecondsNow {
+    final value = therapyElapsedSecondsNow - _currentPatternStartElapsedSec;
+    return value < 0 ? 0 : value;
+  }
 
   BluetoothDevice? _device;
   BluetoothDevice? get device => _device;
@@ -595,10 +652,15 @@ class AlignEyeDeviceService {
       await _cleanupScan();
 
       final preferredDeviceId = await _loadLastConnectedDeviceId();
+      // Always prefer the already paired / previously-connected pod so we
+      // don't accidentally target an unpaired pod nearby and trigger a fresh
+      // Android pair request. Only auto-connect strictly *requires* a paired
+      // candidate — manual connect still falls back to the nearest pod when
+      // none are paired yet.
       final device = await _scanForDevice(
         preferredRemoteId: preferredDeviceId,
-        preferPairedDevice: isAutoConnect,
-        prioritizePreferredDevice: false,
+        preferPairedDevice: true,
+        prioritizePreferredDevice: preferredDeviceId != null,
         requirePairedDevice: isAutoConnect,
         timeout: _defaultScanTimeout,
       );
@@ -1350,6 +1412,65 @@ class AlignEyeDeviceService {
           final reading = PostureReading.fromJson(decoded);
           // Store current reading
           currentReading.value = reading;
+          // Sticky-cache therapy fields that firmware only publishes every
+          // few frames. Only update when the frame actually carries new
+          // info, so the cache survives across transitions / page rebuilds.
+          final isTherapy = reading.mode.trim().toUpperCase() == 'THERAPY';
+          if (isTherapy) {
+            if (reading.therapyPatternSequence.isNotEmpty) {
+              latestTherapyPatternSequence =
+                  List<int>.unmodifiable(reading.therapyPatternSequence);
+            }
+            if (reading.therapyCurrentPatternIndex >= 0) {
+              latestTherapyCurrentPatternIndex =
+                  reading.therapyCurrentPatternIndex;
+            }
+            if (reading.therapyTotalPatterns > 0) {
+              latestTherapyTotalPatterns = reading.therapyTotalPatterns;
+            }
+            final pattName = reading.therapyPattern.trim();
+            if (pattName.isNotEmpty) {
+              // Firmware decorates the name with "[S2:13 0s]" — strip it
+              // before comparing so we don't treat every second as a new
+              // pattern boundary.
+              String strip(String v) {
+                final b = v.indexOf('[');
+                return b <= 0 ? v.trim() : v.substring(0, b).trim();
+              }
+              final prevClean = strip(latestTherapyPatternName);
+              final newClean = strip(pattName);
+              if (prevClean != newClean) {
+                // Pattern boundary — remember when it started so the mini
+                // card and ongoing page can show pattern-elapsed in sync.
+                _currentPatternStartElapsedSec = reading.therapyElapsedSeconds;
+              }
+              latestTherapyPatternName = pattName;
+            }
+            final nextName = reading.therapyNextPattern.trim();
+            if (nextName.isNotEmpty) latestTherapyNextPatternName = nextName;
+            // Re-anchor the countdown on every therapy frame. Consumers
+            // extrapolate from this anchor via a local 1 Hz ticker, so the
+            // displayed countdown stays buttery-smooth between BLE frames
+            // and stays consistent across home + ongoing-therapy pages.
+            if (reading.therapyRemainingSeconds > 0 ||
+                reading.therapyElapsedSeconds > 0) {
+              _therapyRemainingAnchorSec = reading.therapyRemainingSeconds;
+              _therapyElapsedAnchorSec = reading.therapyElapsedSeconds;
+              _therapyAnchorAt = DateTime.now();
+            }
+          } else {
+            // Device left therapy mode — clear the cache so the next session
+            // starts from a clean slate.
+            latestTherapyPatternSequence = const [];
+            latestTherapyCurrentPatternIndex = -1;
+            latestTherapyTotalPatterns = 0;
+            latestTherapyPatternName = '';
+            latestTherapyNextPatternName = '';
+            _therapyRemainingAnchorSec = -1;
+            _therapyElapsedAnchorSec = 0;
+            _therapyAnchorAt = null;
+            _currentPatternStartElapsedSec = 0;
+          }
           // Emit to stream
           _readingController.add(reading);
         }

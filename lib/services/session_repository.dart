@@ -19,6 +19,15 @@ class SessionRepository {
   Future<List<SessionData>> fetchThisWeek({String? liveSessionId}) =>
       fetchByPeriod('week', liveSessionId: liveSessionId);
 
+  /// Load a single session by local db id (what LiveSessionRecorder exposes
+  /// via `DeviceManager.activeSessionId`). Returns null when the row isn't
+  /// present locally (e.g. the recorder dropped it for being too short).
+  Future<SessionData?> fetchById(String id) async {
+    final row = await SessionDatabase.instance.getById(id);
+    if (row == null) return null;
+    return _rowToSession(row, 0);
+  }
+
   /// period ∈ {'week', 'month', 'all'}.
   /// Unknown periods fall back to 'all' so the UI never breaks on a typo.
   Future<List<SessionData>> fetchByPeriod(

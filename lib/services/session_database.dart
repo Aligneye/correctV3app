@@ -178,6 +178,21 @@ class SessionDatabase {
     await db.delete('sessions', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Fetch a single decoded session row by local id. Returns null when the
+  /// row does not exist (e.g. the recorder discarded a sub-threshold short
+  /// session before the caller could look it up).
+  Future<Map<String, dynamic>?> getById(String id) async {
+    final db = await database;
+    final rows = await db.query(
+      'sessions',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return _decodeRow(rows.first);
+  }
+
   Future<void> markSynced(String localId, String remoteId) async {
     final db = await database;
     await db.update(

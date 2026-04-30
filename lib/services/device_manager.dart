@@ -39,6 +39,12 @@ class DeviceManager {
   BleSessionSync? _activeSync;
   LiveSessionRecorder? _liveSessionRecorder;
 
+  /// True if the connection landed (or stayed) while a live session was
+  /// in progress. We defer the BLE backlog sync until the session ends so
+  /// the live posture/therapy stream doesn't have to share airtime with
+  /// bulk session transfers. Cleared once a sync actually runs.
+  bool _syncDeferredForLiveSession = false;
+
   /// Forwarded to [LiveSessionRecorder.primeTherapyContext]. Called by the
   /// therapy page right before firing the BLE command so the recorded row
   /// mirrors the user's target point / intensity / planned duration.
@@ -74,10 +80,17 @@ class DeviceManager {
     // already exist locally (it can only insert new rows).
     if (_btManager.deviceService.connectionStatus.value ==
         DeviceConnectionStatus.connected) {
-      debugPrint('DeviceManager: already connected at init — starting sync');
+      debugPrint('DeviceManager: already connected at init');
       _lastConnected = true;
       _liveSessionRecorder?.setEnabled(true);
-      unawaited(_startSync());
+      if (activeSessionId.value != null) {
+        _syncDeferredForLiveSession = true;
+        debugPrint(
+          'DeviceManager: live session active at init, deferring BLE sync',
+        );
+      } else {
+        unawaited(_startSync());
+      }
     }
   }
 
@@ -85,14 +98,27 @@ class DeviceManager {
     syncCompletedTick.value++;
     debugPrint('DeviceManager: live session changed, tick=${syncCompletedTick.value}');
 
-    // When a live session ends (mode switches from TRAINING/THERAPY to
-    // something else), the firmware stores the completed session to flash.
-    // Re-run sync so the app picks it up immediately instead of waiting
-    // for the next BLE reconnect.
-    if (_btManager.deviceService.connectionStatus.value ==
+    // Only drain the BLE backlog when the device is idle. If a session is
+    // still in progress (live recorder currently owns one) we keep the link
+    // clear so readings aren't interleaved with bulk session transfers; the
+    // sync will fire on the next session-end tick instead.
+    final hasLiveSession = activeSessionId.value != null;
+    if (_btManager.deviceService.connectionStatus.value !=
         DeviceConnectionStatus.connected) {
-      _scheduleResync();
+      return;
     }
+    if (hasLiveSession) {
+      _syncDeferredForLiveSession = true;
+      debugPrint(
+        'DeviceManager: live session active, deferring BLE sync until it ends',
+      );
+      return;
+    }
+    if (_syncDeferredForLiveSession) {
+      debugPrint('DeviceManager: live session ended, draining deferred sync');
+      _syncDeferredForLiveSession = false;
+    }
+    _scheduleResync();
   }
 
   Timer? _resyncTimer;
@@ -115,12 +141,25 @@ class DeviceManager {
     _lastConnected = isConnected;
 
     if (isConnected && !wasConnected) {
-      debugPrint('DeviceManager: BLE connected — starting sync');
+      debugPrint('DeviceManager: BLE connected');
       // Keep the live recorder enabled: BLE sync runs on a separate
       // characteristic and will never overwrite existing local rows, so live
       // readings can flow into the recorder in parallel.
       _liveSessionRecorder?.setEnabled(true);
-      unawaited(_startSync());
+
+      // Defer the backlog pull when a live session is already active at the
+      // moment we (re)connect — e.g. BT dropped mid-session and recovered.
+      // Bulk transfers share the same link and cause the live stream to
+      // stutter, so we wait for the session-end tick instead.
+      if (activeSessionId.value != null) {
+        _syncDeferredForLiveSession = true;
+        debugPrint(
+          'DeviceManager: live session already active on reconnect, '
+          'deferring BLE sync until it ends',
+        );
+      } else {
+        unawaited(_startSync());
+      }
     } else if (!isConnected && wasConnected) {
       debugPrint('DeviceManager: BLE disconnected');
       // Leave the recorder enabled. It gates itself on connection status and

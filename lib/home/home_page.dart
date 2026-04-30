@@ -12,6 +12,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:correctv1/home/meditation_page.dart';
 import 'package:correctv1/discover/discover_page.dart';
+import 'package:correctv1/home/ongoing_therapy_page.dart';
 import 'package:correctv1/home/therapy_page.dart';
 import 'package:correctv1/home/training_page.dart';
 import 'package:correctv1/analytics/analytics_screen.dart';
@@ -230,8 +231,10 @@ class _HomeDashboardState extends State<HomeDashboard>
   int _therapyDurationMinutes = 10;
   Timer? _therapyCountdownTimer;
   int _therapyRemainingSeconds = 0;
-  String _currentTherapyPattern = 'Waiting for therapy';
-  String _nextTherapyPattern = 'Waiting for therapy';
+  Timer? _liveSessionTicker;
+  String? _liveDisplaySessionId;
+  int _liveDisplayDurationSec = 0;
+  bool _liveDisplayHasFrame = false;
   bool _hasShownStartupConnectSheet = false;
   bool _isFindingDevice = false;
   bool _syncBannerDismissed = false;
@@ -286,8 +289,10 @@ class _HomeDashboardState extends State<HomeDashboard>
     _readingSubscription = _deviceService.readings.listen((reading) {
       if (!mounted) return;
       final isTherapyMode = reading.mode.trim().toUpperCase() == 'THERAPY';
-      final currentPattern = reading.therapyPattern.trim();
-      final nextPattern = reading.therapyNextPattern.trim();
+      final isLiveMode =
+          isTherapyMode ||
+          reading.mode.trim().toUpperCase() == 'TRAINING' ||
+          reading.mode.trim().toUpperCase() == 'POSTURE';
       final reportedRemainingSec = reading.therapyRemainingSeconds;
       setState(() {
         _syncBannerDismissed = false;
@@ -302,19 +307,28 @@ class _HomeDashboardState extends State<HomeDashboard>
           _selectedDifficulty = reading.difficultyDeg;
         }
         if (isTherapyMode && reportedRemainingSec > 0) {
-          // Align app countdown with device state after late BLE connection.
-          _therapyCountdownTimer?.cancel();
+          // Snap countdown to firmware ground truth on every frame, then
+          // make sure the 1 Hz local ticker is running so the number keeps
+          // smoothly decreasing in the gap until the next BLE frame. Without
+          // this the timer froze between frames (2-5 s of BLE jitter) and
+          // visibly "stuck" — especially during a page transition when the
+          // reading stream briefly pauses on the old route.
           _therapyRemainingSeconds = reportedRemainingSec;
+          _ensureTherapyCountdownRunning();
         } else if (!isTherapyMode) {
           _therapyCountdownTimer?.cancel();
           _therapyRemainingSeconds = 0;
         }
-        _currentTherapyPattern = isTherapyMode
-            ? (currentPattern.isEmpty ? 'Preparing pattern...' : currentPattern)
-            : 'Waiting for therapy';
-        _nextTherapyPattern = isTherapyMode
-            ? (nextPattern.isEmpty ? 'Upcoming pattern...' : nextPattern)
-            : 'Waiting for therapy';
+        // Pattern names used to be mirrored into local fields here; the
+        // mini card and ongoing page now read straight from the device
+        // service's sticky cache, so there's nothing to do on this side.
+        if (isLiveMode) {
+          _snapLiveSessionDuration(reading);
+        } else {
+          _stopLiveSessionTicker(
+            clearFrame: _deviceManager.activeSessionId.value == null,
+          );
+        }
       });
     });
 
@@ -323,6 +337,7 @@ class _HomeDashboardState extends State<HomeDashboard>
     _deviceManager.syncCompletedTick.addListener(_handleSessionSyncFinished);
     _deviceManager.isSyncing.addListener(_handleSyncingChanged);
     _deviceManager.activeSessionId.addListener(_handleActiveSessionChanged);
+    _deviceService.connectionStatus.addListener(_handleConnectionStatusChanged);
     unawaited(_hydrateCachedStreak());
     unawaited(_loadOfflineSessions());
   }
@@ -333,7 +348,11 @@ class _HomeDashboardState extends State<HomeDashboard>
     _deviceManager.syncCompletedTick.removeListener(_handleSessionSyncFinished);
     _deviceManager.isSyncing.removeListener(_handleSyncingChanged);
     _deviceManager.activeSessionId.removeListener(_handleActiveSessionChanged);
+    _deviceService.connectionStatus.removeListener(
+      _handleConnectionStatusChanged,
+    );
     _therapyCountdownTimer?.cancel();
+    _liveSessionTicker?.cancel();
     // Don't dispose the device service here - it's managed by BluetoothServiceManager
     // unawaited(_deviceService.dispose());
     _controller.dispose();
@@ -347,7 +366,124 @@ class _HomeDashboardState extends State<HomeDashboard>
 
   void _handleActiveSessionChanged() {
     if (!mounted) return;
+    final id = _deviceManager.activeSessionId.value;
+    if (id == null) {
+      _stopLiveSessionTicker(clearFrame: true);
+    } else {
+      _liveDisplaySessionId = id;
+      _syncLiveSessionTickerWithConnection();
+    }
     unawaited(_loadOfflineSessions());
+  }
+
+  void _handleConnectionStatusChanged() {
+    _syncLiveSessionTickerWithConnection();
+  }
+
+  void _syncLiveSessionTickerWithConnection() {
+    final connected =
+        _deviceService.connectionStatus.value ==
+        DeviceConnectionStatus.connected;
+    final hasLiveSession = _deviceManager.activeSessionId.value != null;
+    if (connected && hasLiveSession && _liveDisplayHasFrame) {
+      _ensureLiveSessionTicker();
+    } else {
+      _liveSessionTicker?.cancel();
+      _liveSessionTicker = null;
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _ensureLiveSessionTicker() {
+    if (_liveSessionTicker != null) return;
+    _liveSessionTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) {
+        _liveSessionTicker?.cancel();
+        _liveSessionTicker = null;
+        return;
+      }
+      if (_deviceService.connectionStatus.value !=
+              DeviceConnectionStatus.connected ||
+          _deviceManager.activeSessionId.value == null ||
+          !_liveDisplayHasFrame) {
+        return;
+      }
+      setState(() {
+        _liveDisplayDurationSec++;
+      });
+    });
+  }
+
+  void _stopLiveSessionTicker({required bool clearFrame}) {
+    _liveSessionTicker?.cancel();
+    _liveSessionTicker = null;
+    if (clearFrame) {
+      _liveDisplayHasFrame = false;
+      _liveDisplaySessionId = null;
+      _liveDisplayDurationSec = 0;
+    }
+  }
+
+  void _snapLiveSessionDuration(PostureReading reading) {
+    final activeId = _deviceManager.activeSessionId.value;
+    if (activeId == null) return;
+    _liveDisplaySessionId = activeId;
+    _liveDisplayDurationSec = _liveDurationFromReading(reading);
+    _liveDisplayHasFrame = true;
+    _ensureLiveSessionTicker();
+  }
+
+  int _liveDurationFromReading(PostureReading reading) {
+    if (reading.liveSessionElapsedSeconds > 0) {
+      return reading.liveSessionElapsedSeconds;
+    }
+    if (reading.mode.trim().toUpperCase() == 'THERAPY' &&
+        reading.therapyElapsedSeconds > 0) {
+      return reading.therapyElapsedSeconds;
+    }
+    return _liveDisplayDurationSec;
+  }
+
+  List<SessionData> _sessionsWithLiveDisplayDuration() {
+    if (!_liveDisplayHasFrame || _liveDisplaySessionId == null) {
+      return _offlineSessions;
+    }
+    return [
+      for (final session in _offlineSessions)
+        if (session.isLive && session.dbId == _liveDisplaySessionId)
+          SessionData(
+            id: session.id,
+            dbId: session.dbId,
+            type: session.type,
+            name: session.name,
+            time: session.time,
+            date: session.date,
+            duration: _formatSessionDuration(_liveDisplayDurationSec),
+            durationSec: _liveDisplayDurationSec,
+            alerts: session.alerts,
+            score: session.score,
+            pattern: session.pattern,
+            wrongDurSec: session.wrongDurSec,
+            isLive: session.isLive,
+            tsSynced: session.tsSynced,
+            cloudSynced: session.cloudSynced,
+            startTs: session.startTs,
+            postureEvents: session.postureEvents,
+            therapyPatterns: session.therapyPatterns,
+            therapyPatternEvents: session.therapyPatternEvents,
+          )
+        else
+          session,
+    ];
+  }
+
+  static String _formatSessionDuration(int durationSec) {
+    if (durationSec <= 0) return '0s';
+    if (durationSec < 60) return '${durationSec}s';
+    final minutes = durationSec ~/ 60;
+    final seconds = durationSec % 60;
+    if (seconds == 0) return '$minutes min';
+    return '$minutes min ${seconds}s';
   }
 
   void _handleSessionSyncFinished() {
@@ -812,17 +948,27 @@ class _HomeDashboardState extends State<HomeDashboard>
     return null; // unchanged — no popup
   }
 
-  bool get _isTherapyCountdownRunning =>
+  /// Therapy is "live" from the home-page perspective when the device is in
+  /// therapy mode and we still have time on the clock. Used to swap the
+  /// live-posture card for a compact ongoing-therapy preview.
+  bool get _isTherapyLive =>
       _selectedMode == _ModeControlType.therapy &&
-      ((_therapyCountdownTimer?.isActive ?? false) ||
-          _therapyRemainingSeconds > 0);
+      _therapyRemainingSeconds > 0;
 
   void _startTherapyCountdown(int minutes) {
     _therapyCountdownTimer?.cancel();
     setState(() {
       _therapyRemainingSeconds = minutes * 60;
     });
+    _ensureTherapyCountdownRunning();
+  }
 
+  /// Idempotent: spin up the 1 Hz ticker if it isn't already alive. Called
+  /// from the BLE reading handler on every frame so the countdown keeps
+  /// advancing smoothly between frames instead of freezing until the next
+  /// firmware packet arrives.
+  void _ensureTherapyCountdownRunning() {
+    if (_therapyCountdownTimer?.isActive ?? false) return;
     _therapyCountdownTimer = Timer.periodic(const Duration(seconds: 1), (
       timer,
     ) {
@@ -854,8 +1000,11 @@ class _HomeDashboardState extends State<HomeDashboard>
 
   Future<void> _handleDeviceStatusTap() async {
     final status = _deviceService.connectionStatus.value;
-    if (status == DeviceConnectionStatus.connecting) return;
 
+    // When already connected, show the management sheet. In every other
+    // state (including while an auto-connect attempt is in flight) tapping
+    // the pill should take the user straight to the connect page — it will
+    // surface the ongoing attempt and auto-pop once the pod is connected.
     if (status == DeviceConnectionStatus.connected) {
       await _showConnectedSheet();
       return;
@@ -1163,6 +1312,69 @@ class _HomeDashboardState extends State<HomeDashboard>
     );
   }
 
+  /// Launch the immersive therapy screen using the device's current default
+  /// therapy configuration. Wired to the Therapy button inside the Default
+  /// Mode card — the `MODE=THERAPY` command is sent by the surrounding
+  /// handler before this fires, so firmware is already configured.
+  Future<void> _openOngoingTherapyWithDefaults() async {
+    if (_deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.connected) {
+      return;
+    }
+    // Default intensity mirrors the therapy page's initial slider position so
+    // the ongoing UI and Supabase row carry consistent values when the user
+    // hasn't manually picked one.
+    const int defaultIntensityLevel = 2;
+    DeviceManager().primeTherapyContext(
+      targetPoint: null,
+      intensityLevel: defaultIntensityLevel,
+      plannedDurationMinutes: _therapyDurationMinutes,
+    );
+    await _deviceService.sendTherapyStart(
+      durationMinutes: _therapyDurationMinutes,
+      intensityLevel: defaultIntensityLevel,
+    );
+    if (!mounted) return;
+    _pushOngoingTherapyPage(intensity: defaultIntensityLevel);
+  }
+
+  /// Variant for the mini card tap: therapy is already running on the pod,
+  /// so we just navigate without re-issuing start/prime commands.
+  void _openOngoingTherapyFromHome() {
+    if (_deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.connected) {
+      return;
+    }
+    _pushOngoingTherapyPage(intensity: 2);
+  }
+
+  void _pushOngoingTherapyPage({required int intensity}) {
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 320),
+        reverseTransitionDuration: const Duration(milliseconds: 260),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            OngoingTherapyPage(
+              deviceService: _deviceService,
+              durationMinutes: _therapyDurationMinutes,
+              intensity: intensity,
+              targetPointName: 'Default',
+            ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.97, end: 1)
+                  .chain(CurveTween(curve: Curves.easeOutCubic))
+                  .animate(animation),
+              child: child,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   _ModeControlType _modeFromDevice(String mode) {
     final normalized = mode.trim().toUpperCase();
     if (normalized == 'TRAINING' || normalized == 'POSTURE') {
@@ -1433,12 +1645,21 @@ class _HomeDashboardState extends State<HomeDashboard>
               _StaggeredFadeSlide(
                 controller: _controller,
                 delayMs: 200,
-                child: _PostureGaugeCard(
-                  postureAngle: _postureAngle,
-                  postureStatus: _postureStatus,
-                  isBadPosture: _isBadPosture,
-                  controller: _controller,
-                ),
+                // While therapy is in progress, swap the live-posture card
+                // out for a compact preview of the ongoing therapy session —
+                // tap it to jump into the full immersive page.
+                child: _isTherapyLive
+                    ? _MiniOngoingTherapyCard(
+                        deviceService: _deviceService,
+                        totalMinutes: _therapyDurationMinutes,
+                        onTap: _openOngoingTherapyFromHome,
+                      )
+                    : _PostureGaugeCard(
+                        postureAngle: _postureAngle,
+                        postureStatus: _postureStatus,
+                        isBadPosture: _isBadPosture,
+                        controller: _controller,
+                      ),
               ),
               _kSectionSpacing,
               _StaggeredFadeSlide(
@@ -1448,11 +1669,6 @@ class _HomeDashboardState extends State<HomeDashboard>
                   selectedMode: _selectedMode,
                   selectedPostureTiming: _selectedPostureTiming,
                   selectedDifficulty: _selectedDifficulty,
-                  therapyDurationMinutes: _therapyDurationMinutes,
-                  therapyRemainingSeconds: _therapyRemainingSeconds,
-                  therapyCountdownRunning: _isTherapyCountdownRunning,
-                  currentTherapyPattern: _currentTherapyPattern,
-                  nextTherapyPattern: _nextTherapyPattern,
                   onModeSelected: (mode) {
                     setState(() => _selectedMode = mode);
                     if (mode == _ModeControlType.therapy) {
@@ -1468,6 +1684,13 @@ class _HomeDashboardState extends State<HomeDashboard>
                         difficultyDegrees: _selectedDifficulty,
                       ),
                     );
+                    // Therapy button inside Default Mode should also surface
+                    // the immersive ongoing-therapy screen using the current
+                    // defaults. The MODE=THERAPY command was just sent above,
+                    // so the device is already configured.
+                    if (mode == _ModeControlType.therapy) {
+                      unawaited(_openOngoingTherapyWithDefaults());
+                    }
                   },
                   onPostureTimingSelected: (timing) {
                     setState(() => _selectedPostureTiming = timing);
@@ -1488,20 +1711,6 @@ class _HomeDashboardState extends State<HomeDashboard>
                         postureTiming: _selectedPostureTiming,
                         therapyDurationMinutes: _therapyDurationMinutes,
                         difficultyDegrees: difficulty,
-                      ),
-                    );
-                  },
-                  onTherapyDurationSelected: (minutes) {
-                    setState(() => _therapyDurationMinutes = minutes);
-                    if (_selectedMode == _ModeControlType.therapy) {
-                      _startTherapyCountdown(minutes);
-                    }
-                    unawaited(
-                      _syncModeControlToDevice(
-                        mode: _selectedMode,
-                        postureTiming: _selectedPostureTiming,
-                        therapyDurationMinutes: minutes,
-                        difficultyDegrees: _selectedDifficulty,
                       ),
                     );
                   },
@@ -1552,7 +1761,7 @@ class _HomeDashboardState extends State<HomeDashboard>
                       valueListenable: _deviceManager.isSyncing,
                       builder: (context, isSyncing, _) {
                         return _RecentSessionsCard(
-                          sessions: _offlineSessions,
+                          sessions: _sessionsWithLiveDisplayDuration(),
                           isLoading: _isLoadingOfflineSessions,
                           isSyncing: isSyncing,
                           isDeviceDisconnected:
@@ -2180,6 +2389,594 @@ class _PostureGaugeCard extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Compact preview of an in-progress therapy session shown in the home
+/// dashboard in place of the live-posture gauge. Mirrors the visual language
+/// of [OngoingTherapyPage] — soft pink gradient, gentle breathing orb —
+/// while staying small enough to sit in the stats column. Tapping anywhere
+/// on the card opens the full immersive page.
+class _MiniOngoingTherapyCard extends StatefulWidget {
+  final AlignEyeDeviceService deviceService;
+  final int totalMinutes;
+  final VoidCallback onTap;
+
+  const _MiniOngoingTherapyCard({
+    required this.deviceService,
+    required this.totalMinutes,
+    required this.onTap,
+  });
+
+  @override
+  State<_MiniOngoingTherapyCard> createState() =>
+      _MiniOngoingTherapyCardState();
+}
+
+class _MiniOngoingTherapyCardState extends State<_MiniOngoingTherapyCard>
+    with TickerProviderStateMixin {
+  late final AnimationController _breathController;
+  late final AnimationController _wavesController;
+
+  // Timer state mirrors the immersive page so the home mini card reads
+  // exactly the same values. Seeded with -1 / 0 until the first therapy
+  // frame lands.
+  StreamSubscription<PostureReading>? _readingSub;
+  Timer? _localTicker;
+
+  int _totalRemainingSeconds = -1;
+  int _totalElapsedSeconds = 0;
+  int _totalDurationSeconds = 0;
+  int _frameRemainingSeconds = -1;
+
+  int _lastPatternStartElapsed = 0;
+  String _lastPatternName = '';
+  int? _lastKnownPatternDurationSeconds;
+
+  @override
+  void initState() {
+    super.initState();
+    _totalDurationSeconds = widget.totalMinutes * 60;
+    _breathController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6),
+    )..repeat(reverse: true);
+    _wavesController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 7),
+    )..repeat();
+
+    // Seed from the service's sticky cache so opening a fresh home page
+    // mid-session doesn't flash zeros.
+    final cachedPattern = widget.deviceService.latestTherapyPatternName;
+    if (cachedPattern.isNotEmpty) {
+      _lastPatternName = _stripSessionMeta(cachedPattern);
+    }
+
+    _consumeReading(widget.deviceService.currentReading.value);
+    _readingSub = widget.deviceService.readings.listen(_handleReading);
+
+    widget.deviceService.connectionStatus.addListener(_handleConnectionStatus);
+    _syncLocalTickerWithConnection();
+  }
+
+  @override
+  void dispose() {
+    _readingSub?.cancel();
+    _localTicker?.cancel();
+    widget.deviceService.connectionStatus
+        .removeListener(_handleConnectionStatus);
+    _breathController.dispose();
+    _wavesController.dispose();
+    super.dispose();
+  }
+
+  void _handleConnectionStatus() {
+    _syncLocalTickerWithConnection();
+  }
+
+  void _syncLocalTickerWithConnection() {
+    final connected = widget.deviceService.connectionStatus.value ==
+        DeviceConnectionStatus.connected;
+    if (connected) {
+      _ensureLocalTicker();
+    } else {
+      _localTicker?.cancel();
+      _localTicker = null;
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _ensureLocalTicker() {
+    if (_localTicker != null) return;
+    // Align to the next wall-clock second boundary so this timer fires at
+    // the same real-world instant as the immersive page's — zero visible
+    // drift between the two surfaces.
+    final now = DateTime.now();
+    final msToNextSecond = 1000 - now.millisecond;
+    _localTicker = Timer(Duration(milliseconds: msToNextSecond), () {
+      if (!mounted) return;
+      _runTick();
+      _localTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) {
+          _localTicker?.cancel();
+          _localTicker = null;
+          return;
+        }
+        _runTick();
+      });
+    });
+  }
+
+  void _runTick() {
+    if (_frameRemainingSeconds < 0) return;
+    if (widget.deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.connected) {
+      return;
+    }
+    final anchoredRemaining =
+        widget.deviceService.therapyRemainingSecondsNow;
+    final anchoredElapsed = widget.deviceService.therapyElapsedSecondsNow;
+    setState(() {
+      if (anchoredRemaining >= 0) {
+        _totalRemainingSeconds = anchoredRemaining;
+      } else if (_totalRemainingSeconds > 0) {
+        _totalRemainingSeconds -= 1;
+      }
+      if (anchoredElapsed > _totalElapsedSeconds) {
+        _totalElapsedSeconds = anchoredElapsed;
+      } else {
+        _totalElapsedSeconds += 1;
+      }
+    });
+  }
+
+  void _handleReading(PostureReading reading) {
+    _consumeReading(reading);
+  }
+
+  void _consumeReading(PostureReading? reading) {
+    if (reading == null || !mounted) return;
+    final isTherapy = reading.mode.toUpperCase() == 'THERAPY';
+    if (!isTherapy) return;
+
+    final elapsed = reading.therapyElapsedSeconds;
+    final remaining = reading.therapyRemainingSeconds;
+    final cleanPatternName = _stripSessionMeta(reading.therapyPattern.trim());
+
+    setState(() {
+      _frameRemainingSeconds = remaining;
+      _totalElapsedSeconds = elapsed;
+      _totalRemainingSeconds = remaining;
+      final firmwareTotal = elapsed + remaining;
+      if (firmwareTotal > 0) {
+        _totalDurationSeconds = firmwareTotal;
+      }
+      _ensureLocalTicker();
+
+      if (cleanPatternName != _lastPatternName) {
+        if (_lastPatternName.isNotEmpty) {
+          final prevDuration = elapsed - _lastPatternStartElapsed;
+          if (prevDuration > 0) {
+            _lastKnownPatternDurationSeconds = prevDuration;
+          }
+        }
+        _lastPatternName = cleanPatternName;
+        _lastPatternStartElapsed = elapsed;
+      }
+    });
+  }
+
+  String _stripSessionMeta(String raw) {
+    final bracket = raw.indexOf('[');
+    if (bracket <= 0) return raw;
+    return raw.substring(0, bracket).trim();
+  }
+
+  int get _patternElapsedSeconds {
+    if (_totalElapsedSeconds <= 0) return 0;
+    return math.max(0, _totalElapsedSeconds - _lastPatternStartElapsed);
+  }
+
+  int get _patternDurationSeconds {
+    final guess =
+        _lastKnownPatternDurationSeconds ?? (_totalDurationSeconds ~/ 7);
+    return math.max(20, guess);
+  }
+
+  String _formatMMSS(int totalSeconds) {
+    final safe = math.max(0, totalSeconds);
+    final m = (safe ~/ 60).toString().padLeft(2, '0');
+    final s = (safe % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sessionProgress = _totalDurationSeconds == 0
+        ? 0.0
+        : (_totalElapsedSeconds / _totalDurationSeconds).clamp(0.0, 1.0);
+    final remainingForUi = _totalRemainingSeconds >= 0
+        ? _totalRemainingSeconds
+        : _totalDurationSeconds;
+    final totalMinutesForUi = _totalDurationSeconds > 0
+        ? (_totalDurationSeconds / 60).round()
+        : widget.totalMinutes;
+    final patternElapsed = _patternElapsedSeconds;
+    final patternProgress =
+        (patternElapsed / _patternDurationSeconds).clamp(0.0, 1.0);
+
+    final friendlyPattern = friendlyTherapyPatternLabel(_lastPatternName);
+    final pillLabel =
+        friendlyPattern.isEmpty || friendlyPattern.toLowerCase() ==
+                'preparing pattern...' ||
+            friendlyPattern.toLowerCase() == 'waiting for therapy'
+        ? 'Preparing pattern…'
+        : friendlyPattern;
+
+    return _SurfaceCard(
+      padding: EdgeInsets.zero,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: widget.onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFFFFF4F6),
+                Colors.white,
+                Color(0xFFFDF2F8),
+              ],
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Text(
+                'Therapy in Progress',
+                style: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              Center(
+                child: SizedBox(
+                  height: 260,
+                  width: 260,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      AnimatedBuilder(
+                        animation: Listenable.merge([
+                          _breathController,
+                          _wavesController,
+                        ]),
+                        builder: (context, _) {
+                          return CustomPaint(
+                            size: const Size(260, 260),
+                            painter: _MiniTherapyOrbPainter(
+                              breathValue: _breathController.value,
+                              wavesValue: _wavesController.value,
+                              sessionProgress:
+                                  sessionProgress.clamp(0.0, 1.0),
+                              patternProgress: patternProgress,
+                            ),
+                          );
+                        },
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text(
+                              'SESSION LEFT',
+                              style: TextStyle(
+                                color: Color(0xFFFF2B62),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.6,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              _formatMMSS(remainingForUi),
+                              style: const TextStyle(
+                                color: Color(0xFF1F2937),
+                                fontSize: 42,
+                                fontWeight: FontWeight.w300,
+                                height: 1.0,
+                                letterSpacing: -1.0,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'of ${totalMinutesForUi}m',
+                              style: const TextStyle(
+                                color: Color(0xFF9CA3AF),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Container(
+                              width: 32,
+                              height: 1,
+                              color: const Color(0xFFFCE7F3),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              _formatMMSS(patternElapsed),
+                              style: const TextStyle(
+                                color: Color(0xFFFF2B62),
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                height: 1.0,
+                                letterSpacing: 0.2,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'current pattern',
+                              style: TextStyle(
+                                color: Color(0xFF9CA3AF),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              _NowPatternPill(label: pillLabel),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Pink `NOW <pattern>` capsule that sits below the orb, mirroring the
+/// reference UI shot. `NOW` is a white chip on a saturated pink pill; the
+/// current pattern name sits next to it in bold white.
+class _NowPatternPill extends StatelessWidget {
+  final String label;
+
+  const _NowPatternPill({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(6, 6, 18, 6),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFFF3B75), Color(0xFFED2CA6)],
+        ),
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFF43F5E).withValues(alpha: 0.35),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: const Text(
+              'NOW',
+              style: TextStyle(
+                color: Color(0xFFFF2B62),
+                fontSize: 10.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.1,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 220),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniTherapyOrbPainter extends CustomPainter {
+  final double breathValue;
+  final double wavesValue;
+  final double sessionProgress;
+  final double patternProgress;
+
+  _MiniTherapyOrbPainter({
+    required this.breathValue,
+    required this.wavesValue,
+    required this.sessionProgress,
+    required this.patternProgress,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    // Layered layout mirrors the immersive page: outer session ring, inner
+    // pattern ring, then the breathing orb itself.
+    final outerRadius = size.width * 0.46;
+    final innerRadius = outerRadius - 14;
+    final baseRadius = innerRadius - 12;
+
+    final breath = Curves.easeInOut.transform(breathValue);
+
+    const ringCount = 5;
+    for (int i = 0; i < ringCount; i++) {
+      final phase = (wavesValue + i / ringCount) % 1.0;
+      final eased = Curves.easeOut.transform(phase);
+      final waveRadius = baseRadius * (0.96 + eased * 0.60);
+      final aliveFade = math.sin(phase * math.pi);
+      final opacity = (aliveFade * 0.18).clamp(0.0, 1.0);
+      final wavePaint = Paint()
+        ..color = const Color(0xFFFF7DA0).withValues(alpha: opacity)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.9;
+      canvas.drawCircle(center, waveRadius, wavePaint);
+    }
+
+    final resonancePaint = Paint()
+      ..color = const Color(0xFFFF2B62).withValues(alpha: 0.08 + breath * 0.05)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8;
+    canvas.drawCircle(
+      center,
+      baseRadius * (1.10 + breath * 0.05),
+      resonancePaint,
+    );
+
+    final breathRadius = baseRadius * (1.0 + breath * 0.045);
+
+    final ambientHaloPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFFFFB4C5).withValues(alpha: 0.28),
+          const Color(0xFFFFB4C5).withValues(alpha: 0.0),
+        ],
+        stops: const [0.25, 1.0],
+      ).createShader(
+        Rect.fromCircle(center: center, radius: breathRadius * 1.7),
+      );
+    canvas.drawCircle(center, breathRadius * 1.7, ambientHaloPaint);
+
+    final orbRect = Rect.fromCircle(center: center, radius: breathRadius);
+    final orbPaint = Paint()
+      ..shader = const RadialGradient(
+        center: Alignment(-0.15, -0.20),
+        radius: 1.05,
+        colors: [
+          Color(0xFFFFF5F7),
+          Color(0xFFFFE4E6),
+          Color(0xFFFDD5E0),
+        ],
+        stops: [0.0, 0.55, 1.0],
+      ).createShader(orbRect);
+    canvas.drawCircle(center, breathRadius, orbPaint);
+
+    final highlightPaint = Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.3, -0.4),
+        radius: 0.7,
+        colors: [
+          Colors.white.withValues(alpha: 0.7),
+          Colors.white.withValues(alpha: 0.0),
+        ],
+      ).createShader(orbRect);
+    canvas.drawCircle(center, breathRadius, highlightPaint);
+
+    final orbBorderPaint = Paint()
+      ..color = const Color(0xFFFF2B62).withValues(alpha: 0.12)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8;
+    canvas.drawCircle(center, breathRadius, orbBorderPaint);
+
+    // Inner ring — current-pattern progress.
+    _drawRing(
+      canvas,
+      center,
+      innerRadius,
+      patternProgress.clamp(0.0, 1.0),
+      strokeWidth: 4,
+      trackColor: const Color(0xFFFCE7F3),
+      gradientColors: const [Color(0xFFFF7DA0), Color(0xFFFF2B62)],
+    );
+
+    // Outer ring — total session progress.
+    _drawRing(
+      canvas,
+      center,
+      outerRadius,
+      sessionProgress.clamp(0.0, 1.0),
+      strokeWidth: 6,
+      trackColor: const Color(0xFFFFE4E6),
+      gradientColors: const [Color(0xFFFF1F5B), Color(0xFFED2CA6)],
+    );
+  }
+
+  void _drawRing(
+    Canvas canvas,
+    Offset center,
+    double radius,
+    double progress, {
+    required double strokeWidth,
+    required Color trackColor,
+    required List<Color> gradientColors,
+  }) {
+    final trackPaint = Paint()
+      ..color = trackColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(center, radius, trackPaint);
+
+    if (progress <= 0) return;
+
+    final arcRect = Rect.fromCircle(center: center, radius: radius);
+    final progressPaint = Paint()
+      ..shader = SweepGradient(
+        startAngle: -math.pi / 2,
+        endAngle: -math.pi / 2 + 2 * math.pi,
+        colors: gradientColors,
+      ).createShader(arcRect)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(
+      arcRect,
+      -math.pi / 2,
+      2 * math.pi * progress,
+      false,
+      progressPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _MiniTherapyOrbPainter oldDelegate) {
+    return oldDelegate.breathValue != breathValue ||
+        oldDelegate.wavesValue != wavesValue ||
+        oldDelegate.sessionProgress != sessionProgress ||
+        oldDelegate.patternProgress != patternProgress;
   }
 }
 
@@ -3094,29 +3891,17 @@ class _ModeControlCard extends StatelessWidget {
   final _ModeControlType selectedMode;
   final _PostureTimingType selectedPostureTiming;
   final int selectedDifficulty;
-  final int therapyDurationMinutes;
-  final int therapyRemainingSeconds;
-  final bool therapyCountdownRunning;
-  final String currentTherapyPattern;
-  final String nextTherapyPattern;
   final ValueChanged<_ModeControlType> onModeSelected;
   final ValueChanged<_PostureTimingType> onPostureTimingSelected;
   final ValueChanged<int> onDifficultySelected;
-  final ValueChanged<int> onTherapyDurationSelected;
 
   const _ModeControlCard({
     required this.selectedMode,
     required this.selectedPostureTiming,
     required this.selectedDifficulty,
-    required this.therapyDurationMinutes,
-    required this.therapyRemainingSeconds,
-    required this.therapyCountdownRunning,
-    required this.currentTherapyPattern,
-    required this.nextTherapyPattern,
     required this.onModeSelected,
     required this.onPostureTimingSelected,
     required this.onDifficultySelected,
-    required this.onTherapyDurationSelected,
   });
 
   @override
@@ -3235,52 +4020,10 @@ class _ModeControlCard extends StatelessWidget {
               ],
             ),
           ],
-          if (selectedMode == _ModeControlType.therapy) ...[
-            const SizedBox(height: 16),
-            const Text(
-              'Therapy duration',
-              style: TextStyle(
-                color: _kMutedText,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _ModeButton(
-                    label: '10 min',
-                    selected: therapyDurationMinutes == 10,
-                    onTap: () => onTherapyDurationSelected(10),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _ModeButton(
-                    label: '20 min',
-                    selected: therapyDurationMinutes == 20,
-                    onTap: () => onTherapyDurationSelected(20),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _ModeButton(
-                    label: '30 min',
-                    selected: therapyDurationMinutes == 30,
-                    onTap: () => onTherapyDurationSelected(30),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _TherapyStatusRow(
-              therapyCountdownRunning: therapyCountdownRunning,
-              therapyRemainingSeconds: therapyRemainingSeconds,
-              currentPattern: currentTherapyPattern,
-              nextPattern: nextTherapyPattern,
-            ),
-          ],
+          // Therapy-specific controls intentionally omitted here. Tapping
+          // the Therapy mode button now launches the immersive Ongoing
+          // Therapy page with the device's current defaults, so the home
+          // card stays a lean mode selector.
         ],
       ),
     );

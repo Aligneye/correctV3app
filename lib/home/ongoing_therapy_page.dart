@@ -4,7 +4,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:correctv1/analytics/analytics_screen.dart';
 import 'package:correctv1/bluetooth/aligneye_device_service.dart';
+import 'package:correctv1/services/device_manager.dart';
+import 'package:correctv1/services/session_repository.dart';
 import 'package:correctv1/services/therapy_pattern_names.dart';
 
 class OngoingTherapyPage extends StatefulWidget {
@@ -44,18 +47,47 @@ class _OngoingTherapyPageState extends State<OngoingTherapyPage>
   bool _stopping = false;
   int? _lastKnownPatternDurationSeconds;
 
+  // Local 1 Hz tick keeps the countdown buttery-smooth between BLE frames
+  // (firmware batches JSON every 2-5s, so raw-mirroring caused the timer to
+  // jump 5+ seconds at a time). Whenever a fresh frame lands we snap this
+  // ticker to firmware ground truth, so drift stays bounded to one frame.
+  Timer? _localTicker;
+  // Remaining seconds as reported by the most recent BLE frame. The ticker
+  // extrapolates on top of this until the next frame overwrites it; a
+  // negative value means "no frame yet" and keeps the ticker idle.
+  int _frameRemainingSeconds = -1;
+
+  // Track the recorder's active session id so the moment it clears (session
+  // ended) we can open the detail sheet for the just-finished row. We can't
+  // fetch it after the clear, so we cache the last seen id here.
+  final DeviceManager _deviceManager = DeviceManager();
+  final SessionRepository _sessionRepo = SessionRepository();
+  String? _lastLiveSessionId;
+  bool _completionSheetShown = false;
+
   // Full therapy plan mirrored from the device. The swipeable card renders
   // one page per entry here, so the user can scroll through every pattern
   // in the session — past, present, and upcoming. Updated on every BLE
   // notification; empty until the device announces the sequence.
   List<int> _patternPlan = const [];
   int _liveIndexInPlan = 0;
+  /// Known session pattern count from firmware's `t_total`. Used when we
+  /// know how long the plan is but firmware hasn't given us the full `t_seq`
+  /// yet (e.g. a mid-session reconnect) — lets the pager still show N cards
+  /// instead of a lone "Starting…" placeholder.
+  int _totalPatternSlots = 0;
   late final PageController _patternPageController;
   int _visiblePatternPage = 0;
   bool _userBrowsingPatterns = false;
   Timer? _browseResetTimer;
 
-  late final int _totalDurationSeconds;
+  /// Total therapy session length in seconds. Seeded from
+  /// [widget.durationMinutes] but re-derived on every BLE frame
+  /// (`t_elap + t_rem`) so that a page opened mid-session — e.g. the user
+  /// started therapy on the pod while offline and then connected the phone
+  /// — immediately reflects the *real* session length instead of sticking
+  /// with the stale default we were told at page construction.
+  int _totalDurationSeconds = 0;
 
   @override
   void initState() {
@@ -68,33 +100,180 @@ class _OngoingTherapyPageState extends State<OngoingTherapyPage>
       duration: const Duration(milliseconds: 900),
     )..forward();
 
+    // Slow, meditative breathing — longer cycles feel calmer. Waves take
+    // even longer so they read as an ambient vibration field spreading
+    // outward, not a fast ripple.
     _breathController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 5),
+      duration: const Duration(seconds: 6),
     )..repeat(reverse: true);
 
     _wavesController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 4),
+      duration: const Duration(seconds: 7),
     )..repeat();
 
-    _patternPageController = PageController();
+    // Seed pattern plan + current pattern name from the device service's
+    // sticky cache so a re-entry to this page mid-session doesn't flash
+    // "Getting your therapy session ready…" while waiting for firmware to
+    // re-publish the sequence (it only does so every few seconds).
+    final cachedPlan = widget.deviceService.latestTherapyPatternSequence;
+    if (cachedPlan.isNotEmpty) {
+      _patternPlan = List<int>.unmodifiable(cachedPlan);
+    }
+    _totalPatternSlots = widget.deviceService.latestTherapyTotalPatterns;
+    final cachedIdx = widget.deviceService.latestTherapyCurrentPatternIndex;
+    if (cachedIdx >= 0) {
+      if (_patternPlan.isNotEmpty) {
+        _liveIndexInPlan = cachedIdx.clamp(0, _patternPlan.length - 1);
+      } else if (_totalPatternSlots > 0) {
+        _liveIndexInPlan = cachedIdx.clamp(0, _totalPatternSlots - 1);
+      } else {
+        _liveIndexInPlan = cachedIdx;
+      }
+      _visiblePatternPage = _liveIndexInPlan;
+    }
+    final cachedPatternName = widget.deviceService.latestTherapyPatternName;
+    if (cachedPatternName.isNotEmpty) {
+      _lastPatternName = _stripSessionMeta(cachedPatternName);
+    }
+
+    _patternPageController = PageController(initialPage: _visiblePatternPage);
 
     // Prime state from the current reading if available (e.g. if the user
     // reopens this page after a late reconnect while therapy is running).
     _consumeReading(widget.deviceService.currentReading.value);
     _readingSub = widget.deviceService.readings.listen(_handleReading);
+
+    widget.deviceService.connectionStatus.addListener(_handleConnectionStatus);
+    _syncLocalTickerWithConnection();
+
+    // Remember the id of the session the recorder is currently writing so
+    // that the moment it clears (session ended) we can open the detail sheet
+    // for that specific row. Without caching it here we'd race the clear.
+    _lastLiveSessionId = _deviceManager.activeSessionId.value;
+    _deviceManager.activeSessionId.addListener(_handleActiveSessionChanged);
   }
 
   @override
   void dispose() {
     _readingSub?.cancel();
+    _localTicker?.cancel();
+    widget.deviceService.connectionStatus.removeListener(
+      _handleConnectionStatus,
+    );
+    _deviceManager.activeSessionId.removeListener(_handleActiveSessionChanged);
     _browseResetTimer?.cancel();
     _patternPageController.dispose();
     _entryController.dispose();
     _breathController.dispose();
     _wavesController.dispose();
     super.dispose();
+  }
+
+  void _handleActiveSessionChanged() {
+    final current = _deviceManager.activeSessionId.value;
+    if (current != null) {
+      // Still recording — keep the latest id so we know which row to open
+      // when the recorder finalises this session.
+      _lastLiveSessionId = current;
+      return;
+    }
+    // Recorder cleared the active id — the session just ended. Open the
+    // detail sheet for that row once the recorder has persisted it.
+    if (_completionSheetShown) return;
+    final justFinishedId = _lastLiveSessionId;
+    if (justFinishedId == null) return;
+    _completionSheetShown = true;
+    unawaited(_showCompletedSessionSheet(justFinishedId));
+  }
+
+  Future<void> _showCompletedSessionSheet(String sessionId) async {
+    // The recorder persists on the same frame it clears activeSessionId, but
+    // the write is async — retry a couple of times so the sheet isn't empty
+    // if we raced the final insert/update.
+    SessionData? session;
+    for (var attempt = 0; attempt < 5; attempt++) {
+      session = await _sessionRepo.fetchById(sessionId);
+      if (session != null) break;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    if (!mounted || session == null) return;
+    await showSessionDetailSheet(context, session: session);
+    if (!mounted) return;
+    // Once the user dismisses the stats sheet, leave the ongoing page too —
+    // the therapy flow is fully done.
+    Navigator.of(context).pop();
+  }
+
+  void _handleConnectionStatus() {
+    _syncLocalTickerWithConnection();
+  }
+
+  /// Start the 1 Hz extrapolator only when we're actually receiving data.
+  /// Pausing on disconnect freezes the timer visually — matching what the
+  /// user is asking for ("pod disconnected → everything stops").
+  void _syncLocalTickerWithConnection() {
+    final connected =
+        widget.deviceService.connectionStatus.value ==
+        DeviceConnectionStatus.connected;
+    if (connected && !_sessionEndedByDevice) {
+      _ensureLocalTicker();
+    } else {
+      _localTicker?.cancel();
+      _localTicker = null;
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _ensureLocalTicker() {
+    if (_localTicker != null) return;
+    // Align to the next wall-clock second boundary so any other surface
+    // (e.g. the home mini card) that does the same fires at the same
+    // real-world instant — no visible ±1s drift between the two timers.
+    final now = DateTime.now();
+    final msToNextSecond = 1000 - now.millisecond;
+    _localTicker = Timer(Duration(milliseconds: msToNextSecond), () {
+      if (!mounted) return;
+      _runTick();
+      _localTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) {
+          _localTicker?.cancel();
+          _localTicker = null;
+          return;
+        }
+        _runTick();
+      });
+    });
+  }
+
+  void _runTick() {
+    if (_sessionEndedByDevice) {
+      _localTicker?.cancel();
+      _localTicker = null;
+      return;
+    }
+    if (_frameRemainingSeconds < 0) return; // no frame yet
+    if (widget.deviceService.connectionStatus.value !=
+        DeviceConnectionStatus.connected) {
+      return;
+    }
+    final anchoredRemaining =
+        widget.deviceService.therapyRemainingSecondsNow;
+    final anchoredElapsed =
+        widget.deviceService.therapyElapsedSecondsNow;
+    setState(() {
+      if (anchoredRemaining >= 0) {
+        _totalRemainingSeconds = anchoredRemaining;
+      } else if (_totalRemainingSeconds > 0) {
+        _totalRemainingSeconds -= 1;
+      }
+      if (anchoredElapsed > _totalElapsedSeconds) {
+        _totalElapsedSeconds = anchoredElapsed;
+      } else {
+        _totalElapsedSeconds += 1;
+      }
+    });
   }
 
   void _handleReading(PostureReading reading) {
@@ -121,12 +300,29 @@ class _OngoingTherapyPageState extends State<OngoingTherapyPage>
           _totalRemainingSeconds = 0;
           _breathController.stop();
           _wavesController.stop();
+          _localTicker?.cancel();
+          _localTicker = null;
         }
         return;
       }
 
+      // Snap the displayed values to firmware ground truth every time a
+      // frame lands. Between frames the 1 Hz local ticker advances these
+      // same fields, so drift is bounded to a single frame interval and the
+      // timer never visibly jumps by 5+ seconds.
+      _frameRemainingSeconds = remaining;
       _totalElapsedSeconds = elapsed;
       _totalRemainingSeconds = remaining;
+      // Re-derive session total length from firmware each frame. Matters
+      // for the "phone reconnects mid-session" case where the duration we
+      // were constructed with is a guess (e.g. 10 m default) but the pod
+      // is actually running a 20 m session.
+      final firmwareTotal = elapsed + remaining;
+      if (firmwareTotal > 0) {
+        _totalDurationSeconds = firmwareTotal;
+      }
+      // A live frame arrived — make sure the smoother ticker is running.
+      _ensureLocalTicker();
       if (reading.therapyIntensityLevel >= 1 &&
           reading.therapyIntensityLevel <= 3) {
         _intensityLevel = reading.therapyIntensityLevel;
@@ -159,8 +355,13 @@ class _OngoingTherapyPageState extends State<OngoingTherapyPage>
       if (reading.therapyPatternSequence.isNotEmpty) {
         _patternPlan = List<int>.unmodifiable(reading.therapyPatternSequence);
       }
+      if (reading.therapyTotalPatterns > 0) {
+        _totalPatternSlots = reading.therapyTotalPatterns;
+      }
       final reportedIndex = reading.therapyCurrentPatternIndex;
       if (reportedIndex >= 0 && reportedIndex < _patternPlan.length) {
+        _liveIndexInPlan = reportedIndex;
+      } else if (reportedIndex >= 0 && _patternPlan.isEmpty) {
         _liveIndexInPlan = reportedIndex;
       }
 
@@ -193,11 +394,32 @@ class _OngoingTherapyPageState extends State<OngoingTherapyPage>
     return raw.substring(0, bracket).trim();
   }
 
+  String? _friendlyLivePatternName() {
+    final raw = widget.deviceService.latestTherapyPatternName;
+    if (raw.trim().isEmpty) return null;
+    final label = friendlyTherapyPatternLabel(raw);
+    return label.isEmpty ? null : label;
+  }
+
+  String? _friendlyLivePatternDescription() {
+    final raw = widget.deviceService.latestTherapyPatternName;
+    if (raw.trim().isEmpty) return null;
+    final idx = therapyPatternIndexFromName(_stripSessionMeta(raw));
+    if (idx == null) return null;
+    return therapyPatternDescription(idx);
+  }
+
   /// Page index in the swipeable card that represents the currently
-  /// playing pattern. Matches firmware's `t_cur`, clamped to the known plan.
+  /// playing pattern. Matches firmware's `t_cur`, clamped to whichever
+  /// pager length we're about to render (real plan or synthetic slots).
   int _liveCardIndex() {
-    if (_patternPlan.isEmpty) return 0;
-    return _liveIndexInPlan.clamp(0, _patternPlan.length - 1);
+    if (_patternPlan.isNotEmpty) {
+      return _liveIndexInPlan.clamp(0, _patternPlan.length - 1);
+    }
+    if (_totalPatternSlots > 0) {
+      return _liveIndexInPlan.clamp(0, _totalPatternSlots - 1);
+    }
+    return 0;
   }
 
   void _onPatternPageChanged(int index) {
@@ -323,7 +545,12 @@ class _OngoingTherapyPageState extends State<OngoingTherapyPage>
                         patternDuration: _patternDurationSeconds,
                         sessionProgress: sessionProgress,
                         sessionRemainingSeconds: remainingForUi,
-                        totalMinutes: widget.durationMinutes,
+                        // Prefer firmware-reported total over the value we
+                        // were constructed with so mid-session reconnects
+                        // show the real session length.
+                        totalMinutes: _totalDurationSeconds > 0
+                            ? (_totalDurationSeconds / 60).round()
+                            : widget.durationMinutes,
                         isCompleted: _sessionEndedByDevice,
                         formatTime: _formatMMSS,
                       ),
@@ -344,6 +571,18 @@ class _OngoingTherapyPageState extends State<OngoingTherapyPage>
                     isCompleted: _sessionEndedByDevice,
                     onPageChanged: _onPatternPageChanged,
                     onReturnToLive: _snapToLivePattern,
+                    // Feed the friendly live-pattern name (firmware "Muscle
+                    // Act" → "Wake-Up Pulse") so the pager can render a real
+                    // card even before the full plan arrives on a
+                    // mid-session reconnect.
+                    livePatternName: _friendlyLivePatternName(),
+                    livePatternDescription: _friendlyLivePatternDescription(),
+                    // When firmware has announced "total patterns in this
+                    // session" but hasn't given us the full sequence yet,
+                    // pass the count through so the pager can still render
+                    // N placeholder cards (Played / Live / Upcoming) instead
+                    // of collapsing to a single "Starting…" card.
+                    totalPatternSlots: _totalPatternSlots,
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -695,64 +934,110 @@ class _OrbPainter extends CustomPainter {
 
     final breath = Curves.easeInOut.transform(breathValue);
 
-    // Ambient ripple waves behind everything for the "relaxing" feel.
+    // Outer vibration field — five soft rings spreading outward suggest
+    // gentle waves radiating from the therapy point. Low opacity + a lot
+    // of rings reads as an ambient field rather than sharp ripples.
     if (!isCompleted) {
-      for (int i = 0; i < 3; i++) {
-        final phase = (wavesValue + i / 3) % 1.0;
-        final waveRadius = baseRadius * (1.02 + phase * 0.55);
-        final opacity = (1 - phase).clamp(0.0, 1.0) * 0.28;
+      const ringCount = 5;
+      for (int i = 0; i < ringCount; i++) {
+        final phase = (wavesValue + i / ringCount) % 1.0;
+        final eased = Curves.easeOut.transform(phase);
+        final waveRadius = baseRadius * (0.96 + eased * 0.62);
+        // Fade in at birth, out at death — avoids the hard spawn-at-center
+        // pop the single-fade version had.
+        final aliveFade = math.sin(phase * math.pi); // 0 → 1 → 0
+        final opacity = (aliveFade * 0.18).clamp(0.0, 1.0);
         final wavePaint = Paint()
-          ..color = const Color(0xFFFF4F73).withValues(alpha: opacity)
+          ..color = const Color(0xFFFF7DA0).withValues(alpha: opacity)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.4;
+          ..strokeWidth = 1.0;
         canvas.drawCircle(center, waveRadius, wavePaint);
       }
     }
 
-    final breathRadius = baseRadius * (1.0 + breath * 0.08);
+    // Subtle "resonance" ring that breathes with the orb — gives the
+    // vibration field a slow, synchronous heartbeat.
+    if (!isCompleted) {
+      final resonancePaint = Paint()
+        ..color = const Color(0xFFFF2B62).withValues(alpha: 0.08 + breath * 0.06)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8;
+      canvas.drawCircle(center, baseRadius * (1.10 + breath * 0.05), resonancePaint);
+    }
 
-    // Soft halo under the orb.
-    final haloPaint = Paint()
+    // Breathing amplitude intentionally small — a calm pulse, not a throb.
+    final breathRadius = baseRadius * (1.0 + breath * 0.045);
+
+    // Two-layer halo: wide soft ambient glow + tighter inner bloom. Reads
+    // like the orb is emitting light rather than just sitting on a backdrop.
+    final ambientHaloPaint = Paint()
       ..shader = RadialGradient(
         colors: [
-          const Color(0xFFFF7DA0).withValues(alpha: 0.38),
+          const Color(0xFFFFB4C5).withValues(alpha: 0.30),
           const Color(0xFFFFB4C5).withValues(alpha: 0.0),
+        ],
+        stops: const [0.25, 1.0],
+      ).createShader(
+        Rect.fromCircle(center: center, radius: breathRadius * 1.85),
+      );
+    canvas.drawCircle(center, breathRadius * 1.85, ambientHaloPaint);
+
+    final innerBloomPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFFFF7DA0).withValues(alpha: 0.26 + breath * 0.10),
+          const Color(0xFFFF7DA0).withValues(alpha: 0.0),
         ],
         stops: const [0.35, 1.0],
       ).createShader(
-        Rect.fromCircle(center: center, radius: breathRadius * 1.6),
+        Rect.fromCircle(center: center, radius: breathRadius * 1.25),
       );
-    canvas.drawCircle(center, breathRadius * 1.6, haloPaint);
+    canvas.drawCircle(center, breathRadius * 1.25, innerBloomPaint);
 
-    // Breathing orb body.
+    // Breathing orb body — softer, more pastel gradient for a calmer feel.
     final orbRect = Rect.fromCircle(center: center, radius: breathRadius);
     final orbPaint = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
+      ..shader = const RadialGradient(
+        center: Alignment(-0.15, -0.20),
+        radius: 1.05,
         colors: [
+          Color(0xFFFFF5F7),
           Color(0xFFFFE4E6),
-          Color(0xFFFFD1DC),
-          Color(0xFFFCE7F3),
+          Color(0xFFFDD5E0),
         ],
+        stops: [0.0, 0.55, 1.0],
       ).createShader(orbRect);
     canvas.drawCircle(center, breathRadius, orbPaint);
 
+    // Glossy specular highlight.
     final highlightPaint = Paint()
       ..shader = RadialGradient(
-        center: const Alignment(-0.35, -0.45),
-        radius: 0.85,
+        center: const Alignment(-0.32, -0.42),
+        radius: 0.75,
         colors: [
-          Colors.white.withValues(alpha: 0.80),
+          Colors.white.withValues(alpha: 0.70),
           Colors.white.withValues(alpha: 0.0),
         ],
       ).createShader(orbRect);
     canvas.drawCircle(center, breathRadius, highlightPaint);
 
+    // Inner glowing core that pulses with the breath — the "vibration
+    // source" the outer waves emanate from.
+    final coreRadius = breathRadius * (0.28 + breath * 0.04);
+    final corePaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFFFFF0F3).withValues(alpha: 0.85),
+          const Color(0xFFFF7DA0).withValues(alpha: 0.0),
+        ],
+        stops: const [0.1, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: coreRadius * 1.4));
+    canvas.drawCircle(center, coreRadius * 1.4, corePaint);
+
     final orbBorderPaint = Paint()
-      ..color = const Color(0xFFFF2B62).withValues(alpha: 0.15)
+      ..color = const Color(0xFFFF2B62).withValues(alpha: 0.12)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
+      ..strokeWidth = 1.0;
     canvas.drawCircle(center, breathRadius, orbBorderPaint);
 
     // Inner ring — current-pattern progress.
@@ -841,6 +1126,17 @@ class _PatternCardPager extends StatelessWidget {
   final bool isCompleted;
   final ValueChanged<int> onPageChanged;
   final VoidCallback onReturnToLive;
+  /// Best-known friendly name of the currently-playing pattern. Used as a
+  /// graceful fallback when [patternPlan] is still empty (e.g. right after
+  /// a mid-session reconnect) so we show something meaningful instead of
+  /// "Getting your therapy session ready…".
+  final String? livePatternName;
+  final String? livePatternDescription;
+  /// Total scheduled patterns in the current session (firmware `t_total`).
+  /// Only consulted when [patternPlan] is empty — lets the pager render
+  /// N cards with Played/Live/Upcoming statuses even before the full
+  /// sequence has been received.
+  final int totalPatternSlots;
 
   const _PatternCardPager({
     required this.controller,
@@ -852,13 +1148,64 @@ class _PatternCardPager extends StatelessWidget {
     required this.isCompleted,
     required this.onPageChanged,
     required this.onReturnToLive,
+    this.livePatternName,
+    this.livePatternDescription,
+    this.totalPatternSlots = 0,
   });
 
   @override
   Widget build(BuildContext context) {
     final pages = <_PatternCardData>[];
     if (patternPlan.isEmpty) {
-      pages.add(_PatternCardData.placeholder(isCompleted: isCompleted));
+      // Plan hasn't landed yet. If firmware told us how many patterns are
+      // scheduled (`t_total`) we can still render one card per slot with
+      // played/live/upcoming statuses — much better than a lone
+      // "Starting…" placeholder on a mid-session reconnect.
+      if (totalPatternSlots > 0) {
+        final liveClamped = liveIndex.clamp(0, totalPatternSlots - 1);
+        for (var i = 0; i < totalPatternSlots; i++) {
+          final _PatternCardStatus status;
+          if (isCompleted) {
+            status = _PatternCardStatus.played;
+          } else if (i < liveClamped) {
+            status = _PatternCardStatus.played;
+          } else if (i == liveClamped) {
+            status = _PatternCardStatus.live;
+          } else {
+            status = _PatternCardStatus.upcoming;
+          }
+          final isLiveSlot = status == _PatternCardStatus.live;
+          final name = isLiveSlot &&
+                  livePatternName != null &&
+                  livePatternName!.trim().isNotEmpty
+              ? livePatternName!
+              : 'Pattern ${i + 1}';
+          final description = isLiveSlot
+              ? (livePatternDescription ??
+                  'This pattern is currently playing.')
+              : (status == _PatternCardStatus.played
+                  ? 'Already played earlier in this session.'
+                  : 'Pattern details will appear once it plays.');
+          pages.add(_PatternCardData.fromPlan(
+            name: name,
+            description: description,
+            indexInSession: i,
+            totalInSession: totalPatternSlots,
+            status: status,
+          ));
+        }
+      } else if (livePatternName != null && livePatternName!.trim().isNotEmpty) {
+        pages.add(_PatternCardData(
+          name: livePatternName!,
+          description: livePatternDescription ??
+              'Pattern details will appear once the plan syncs.',
+          badge: 'Playing now',
+          status: _PatternCardStatus.live,
+          isPlaceholder: false,
+        ));
+      } else {
+        pages.add(_PatternCardData.placeholder(isCompleted: isCompleted));
+      }
     } else {
       for (var i = 0; i < patternPlan.length; i++) {
         final patternId = patternPlan[i];
@@ -891,8 +1238,9 @@ class _PatternCardPager extends StatelessWidget {
 
     final totalPages = pages.length;
     final effectiveVisible = visibleIndex.clamp(0, totalPages - 1);
+    final hasMultipleCards = totalPages > 1;
     final showReturnToLive =
-        !isCompleted && effectiveVisible != liveIndex && patternPlan.isNotEmpty;
+        !isCompleted && effectiveVisible != liveIndex && hasMultipleCards;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

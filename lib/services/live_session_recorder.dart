@@ -34,6 +34,7 @@ class LiveSessionRecorder {
   bool _dirtyWhileWriting = false;
   bool _transitionInFlight = false;
   bool _enabled = false;
+  Timer? _pendingFinishTimer;
 
   // Context the app stashes right before asking the device to start therapy.
   // Consumed (and cleared) on the next THERAPY session start so that the
@@ -43,6 +44,7 @@ class LiveSessionRecorder {
 
   static const Duration _updateInterval = Duration(seconds: 5);
   static const Duration _minimumSessionDuration = Duration(seconds: 30);
+  static const Duration _finishGracePeriod = Duration(seconds: 7);
 
   void start() {
     if (_started) return;
@@ -106,6 +108,8 @@ class LiveSessionRecorder {
     }
     await _readingSub?.cancel();
     _readingSub = null;
+    _pendingFinishTimer?.cancel();
+    _pendingFinishTimer = null;
   }
 
   void _handleConnectionStatus() {
@@ -131,9 +135,10 @@ class LiveSessionRecorder {
 
     final type = _typeForMode(reading.mode);
     if (type == null) {
-      unawaited(_finishActiveSession());
+      _scheduleActiveSessionFinish();
       return;
     }
+    _cancelPendingFinish();
 
     final active = _active;
     if (_transitionInFlight) return;
@@ -152,10 +157,29 @@ class LiveSessionRecorder {
     }
   }
 
+  void _scheduleActiveSessionFinish() {
+    if (_active == null || _pendingFinishTimer != null) return;
+
+    // Firmware can emit brief non-session/status frames while a session is
+    // still running. Keep the live row alive through that gap; a real live
+    // frame cancels this timer, while sustained idle mode finalizes it.
+    _pendingFinishTimer = Timer(_finishGracePeriod, () {
+      _pendingFinishTimer = null;
+      unawaited(_finishActiveSession());
+    });
+    unawaited(_persistActiveSession(force: true));
+  }
+
+  void _cancelPendingFinish() {
+    _pendingFinishTimer?.cancel();
+    _pendingFinishTimer = null;
+  }
+
   Future<void> _switchSession(String type, PostureReading reading) async {
     if (_transitionInFlight) return;
     _transitionInFlight = true;
     try {
+      _cancelPendingFinish();
       await _finishActiveSession();
       await _startSession(type, reading);
     } finally {
@@ -289,6 +313,7 @@ class LiveSessionRecorder {
   }
 
   Future<void> _finishActiveSession() async {
+    _cancelPendingFinish();
     final active = _active;
     if (active == null) return;
 

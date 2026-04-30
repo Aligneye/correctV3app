@@ -73,6 +73,23 @@ int? therapyPatternIndexFromDeviceNumber(int rawPattern) {
   return null;
 }
 
+/// Map whatever raw label firmware emits (e.g. "Muscle Act [S2:13 0s]")
+/// into the friendly Aligneye-facing name shown in the UI
+/// (e.g. "Wake-Up Pulse"). Returns the stripped original string if no
+/// mapping is found so we still render something meaningful instead of
+/// "Unknown".
+String friendlyTherapyPatternLabel(String rawPattern) {
+  final stripped = () {
+    final bracket = rawPattern.indexOf('[');
+    if (bracket <= 0) return rawPattern.trim();
+    return rawPattern.substring(0, bracket).trim();
+  }();
+  if (stripped.isEmpty) return stripped;
+  final index = therapyPatternIndexFromName(stripped);
+  if (index == null) return stripped;
+  return therapyPatternName(index);
+}
+
 int? therapyPatternIndexFromName(String rawPattern) {
   final normalized = rawPattern.trim().toLowerCase();
   if (normalized.isEmpty) return null;

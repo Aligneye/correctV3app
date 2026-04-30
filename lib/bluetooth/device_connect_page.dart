@@ -64,7 +64,35 @@ class _DeviceConnectPageState extends State<DeviceConnectPage>
     _ring3 = _interval(0.44, 1.00);
 
     _btManager.deviceService.connectionStatus.addListener(_onStatusChange);
-    _startScan();
+
+    // If a connection attempt (auto or manual) is already in flight, just
+    // reflect that state — don't kick off a scan. The pod is already being
+    // reached for; scanning on top would cause a duplicate pair prompt.
+    final currentStatus = _btManager.deviceService.connectionStatus.value;
+    if (currentStatus == DeviceConnectionStatus.connecting) {
+      _connecting = true;
+    } else if (currentStatus == DeviceConnectionStatus.connected) {
+      // Pop right away on the next frame — nothing to do here.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.of(context).pop(true);
+      });
+    } else {
+      _bootstrapConnectFlow();
+    }
+  }
+
+  /// When the page opens and we're disconnected, decide whether to scan for
+  /// nearby pods (first-time pairing) or to connect straight to the already
+  /// bonded pod (no scan, no pair popup).
+  Future<void> _bootstrapConnectFlow() async {
+    final hasBonded = await _btManager.deviceService.hasBondedTargetDevice();
+    if (!mounted) return;
+    if (hasBonded) {
+      // Skip the scan UI entirely — just try to connect to the paired pod.
+      unawaited(_connect());
+    } else {
+      _startScan();
+    }
   }
 
   Animation<double> _interval(double begin, double end) =>
@@ -77,9 +105,16 @@ class _DeviceConnectPageState extends State<DeviceConnectPage>
 
   void _onStatusChange() {
     if (!mounted) return;
-    if (_btManager.deviceService.connectionStatus.value ==
-        DeviceConnectionStatus.connected) {
+    final status = _btManager.deviceService.connectionStatus.value;
+    if (status == DeviceConnectionStatus.connected) {
       Navigator.of(context).pop(true);
+      return;
+    }
+    // Keep the spinner in sync with the underlying service so a tap during
+    // auto-connect lands straight on the connecting view.
+    final shouldShowConnecting = status == DeviceConnectionStatus.connecting;
+    if (shouldShowConnecting != _connecting) {
+      setState(() => _connecting = shouldShowConnecting);
     }
   }
 
