@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:correctv1/analytics/analytics_screen.dart';
 import 'package:correctv1/services/session_database.dart';
+import 'package:correctv1/services/therapy_pattern_names.dart';
 
 /// Thin read layer over the local `sessions` SQLite table.
 ///
@@ -260,7 +261,8 @@ class SessionRepository {
         if (parsed != null) out.add(parsed);
       }
     }
-    return out.isEmpty ? null : out;
+    if (out.isEmpty) return null;
+    return _normalizeTherapyPatterns(out);
   }
 
   List<TherapyPatternEvent>? _parseTherapyPatternEvents(
@@ -281,7 +283,14 @@ class SessionRepository {
       }
       if (out.isNotEmpty) {
         out.sort((a, b) => a.startOffsetSec.compareTo(b.startOffsetSec));
-        return out;
+        final normalizedEvents = _playedTherapyPatternEvents(
+          _normalizeTherapyPatternEvents(out),
+          durationSec,
+        );
+        if (fallbackPatterns == null ||
+            normalizedEvents.length >= fallbackPatterns.length) {
+          return normalizedEvents;
+        }
       }
     }
 
@@ -303,21 +312,77 @@ class SessionRepository {
     }
 
     var cursor = 0;
-    return [
-      for (var i = 0; i < patterns.length; i++)
-        () {
-          final isLast = i == patterns.length - 1;
-          final remaining = (safeDuration - cursor).clamp(0, 1 << 30).toInt();
-          final dur = isLast ? remaining : remaining.clamp(0, 60).toInt();
-          final event = TherapyPatternEvent(
-            patternIndex: patterns[i],
-            startOffsetSec: cursor,
-            durationSec: dur,
-          );
-          cursor += dur;
-          return event;
-        }(),
-    ];
+    final events = <TherapyPatternEvent>[];
+    for (var i = 0; i < patterns.length; i++) {
+      final remaining = (safeDuration - cursor).clamp(0, 1 << 30).toInt();
+      if (remaining <= 0) break;
+
+      final dur = remaining.clamp(0, 60).toInt();
+      events.add(
+        TherapyPatternEvent(
+          patternIndex: patterns[i],
+          startOffsetSec: cursor,
+          durationSec: dur,
+        ),
+      );
+      cursor += dur;
+    }
+    return events.isEmpty ? null : events;
+  }
+
+  List<int> _normalizeTherapyPatterns(List<int> patterns) {
+    final normalized = <int>[];
+    for (final pattern in patterns) {
+      final value = therapyPatternIndexFromDeviceNumber(pattern);
+      if (value != null) normalized.add(value);
+    }
+    return normalized.isEmpty ? patterns : normalized;
+  }
+
+  List<TherapyPatternEvent> _normalizeTherapyPatternEvents(
+    List<TherapyPatternEvent> events,
+  ) {
+    final normalized = <TherapyPatternEvent>[];
+    for (final event in events) {
+      final pattern = therapyPatternIndexFromDeviceNumber(event.patternIndex);
+      if (pattern == null) continue;
+      normalized.add(
+        TherapyPatternEvent(
+          patternIndex: pattern,
+          startOffsetSec: event.startOffsetSec,
+          durationSec: event.durationSec,
+        ),
+      );
+    }
+    return normalized.isEmpty ? events : normalized;
+  }
+
+  List<TherapyPatternEvent> _playedTherapyPatternEvents(
+    List<TherapyPatternEvent> events,
+    int durationSec,
+  ) {
+    final safeDuration = durationSec.clamp(0, 1 << 30).toInt();
+    final played = <TherapyPatternEvent>[];
+    for (final event in events) {
+      if (event.durationSec <= 0 || event.startOffsetSec >= safeDuration) {
+        continue;
+      }
+      final remaining = (safeDuration - event.startOffsetSec)
+          .clamp(0, 1 << 30)
+          .toInt();
+      final duration = event.durationSec > remaining
+          ? remaining
+          : event.durationSec;
+      if (duration <= 0) continue;
+      played.add(
+        TherapyPatternEvent(
+          patternIndex: event.patternIndex,
+          startOffsetSec: event.startOffsetSec,
+          durationSec: duration,
+        ),
+      );
+    }
+    return played;
   }
 
   int _scoreFrom(int durationSec, int wrongDurSec) {

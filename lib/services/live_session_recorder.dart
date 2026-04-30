@@ -180,6 +180,7 @@ class LiveSessionRecorder {
       _active = _LiveSession(id: id, type: type, startedAt: startAt)
         ..wrongCount = type == 'posture' ? reading.liveSessionBadCount : 0
         ..therapyPattern = initialPattern
+        ..durationSec = initialDurationSec
         ..therapyPatternSequence = initialPattern != null
             ? [initialPattern]
             : []
@@ -221,12 +222,14 @@ class LiveSessionRecorder {
       }
     }
 
-    final duration = DateTime.now().difference(active.startedAt);
-    if (duration < _minimumSessionDuration) {
+    final durationSec = _currentDurationSec(active, DateTime.now());
+    if (durationSec < _minimumSessionDuration.inSeconds) {
       await _deleteShortSession(active);
     } else {
       await _persistActiveSession(force: true);
+      SessionSyncService.instance.triggerSync();
     }
+
     debugPrint('LiveSessionRecorder: finished ${active.type} session');
     _active = null;
     _activeSessionId.value = null;
@@ -259,6 +262,7 @@ class LiveSessionRecorder {
           active.startedAt,
           DateTime.now(),
         );
+        active.durationSec = elapsedSec;
         active.therapyPattern = pattern;
         final seq = active.therapyPatternSequence;
         if (seq.isEmpty || seq.last != pattern) {
@@ -281,11 +285,12 @@ class LiveSessionRecorder {
     }
 
     final now = DateTime.now();
-    final elapsedSec = now
-        .difference(active.startedAt)
-        .inSeconds
-        .clamp(0, 0xFFFE)
-        .toInt();
+    final elapsedSec = _durationFrom(
+      reading,
+      active.startedAt,
+      now,
+    ).clamp(0, 0xFFFE).toInt();
+    active.durationSec = elapsedSec;
 
     if (reading.isBadPosture && !_lastBadPosture) {
       active.wrongCount++;
@@ -330,11 +335,7 @@ class LiveSessionRecorder {
       do {
         _dirtyWhileWriting = false;
         final now = DateTime.now();
-        final durationSec = now
-            .difference(active.startedAt)
-            .inSeconds
-            .clamp(1, 1 << 30)
-            .toInt();
+        final durationSec = _currentDurationSec(active, now);
         final therapyPatternEvents = active.type == 'therapy'
             ? _closedTherapyPatternEvents(active, durationSec)
             : null;
@@ -414,6 +415,19 @@ class LiveSessionRecorder {
     return now.difference(startAt).inSeconds.clamp(1, 1 << 30).toInt();
   }
 
+  int _currentDurationSec(_LiveSession active, DateTime now) {
+    final wallClockSec = now
+        .difference(active.startedAt)
+        .inSeconds
+        .clamp(1, 1 << 30)
+        .toInt();
+    final durationSec = active.durationSec > wallClockSec
+        ? active.durationSec
+        : wallClockSec;
+    active.durationSec = durationSec;
+    return durationSec;
+  }
+
   String? _typeForMode(String mode) {
     final normalized = mode.trim().toUpperCase();
     if (normalized == 'TRAINING' || normalized == 'POSTURE') {
@@ -434,7 +448,12 @@ class LiveSessionRecorder {
       caseSensitive: false,
     ).firstMatch(pattern);
     if (match != null) {
-      return int.tryParse(match.group(1)!);
+      final devicePattern = int.tryParse(match.group(1)!);
+      if (devicePattern == null) return null;
+      if (devicePattern >= 1 && devicePattern <= kTherapyPatternNames.length) {
+        return devicePattern - 1;
+      }
+      return therapyPatternIndexFromDeviceNumber(devicePattern);
     }
     return null;
   }
@@ -462,6 +481,7 @@ class _LiveSession {
   final DateTime startedAt;
   int wrongCount = 0;
   int wrongDurationSec = 0;
+  int durationSec = 0;
   int? therapyPattern;
 
   final List<Map<String, int>> postureEvents = <Map<String, int>>[];

@@ -126,6 +126,7 @@ class SessionDatabase {
         fields['therapy_pattern_events'],
       );
     }
+    await _preserveRicherTherapyTimeline(db, id, update);
     if (update.isEmpty) return;
     // Mark as dirty unless explicitly set.
     if (!fields.containsKey('sync_status')) {
@@ -169,21 +170,11 @@ class SessionDatabase {
     );
     if (byRemote.isNotEmpty) {
       final localId = byRemote.first['id'] as String;
+      final update = _remoteUpdate(remoteRow, syncStatus: 1);
+      await _preserveRicherTherapyTimeline(db, localId, update);
       await db.update(
         'sessions',
-        {
-          'duration_sec': remoteRow['duration_sec'],
-          'wrong_count': remoteRow['wrong_count'],
-          'wrong_dur_sec': remoteRow['wrong_dur_sec'],
-          'therapy_pattern': remoteRow['therapy_pattern'],
-          'ts_synced': (remoteRow['ts_synced'] == true) ? 1 : 0,
-          'posture_events': _encodeJson(remoteRow['posture_events']),
-          'therapy_patterns': _encodeJson(remoteRow['therapy_patterns']),
-          'therapy_pattern_events': _encodeJson(
-            remoteRow['therapy_pattern_events'],
-          ),
-          'sync_status': 1,
-        },
+        update,
         where: 'id = ?',
         whereArgs: [localId],
       );
@@ -199,22 +190,15 @@ class SessionDatabase {
         const Duration(seconds: 10),
       );
       if (existing != null) {
+        final update = _remoteUpdate(
+          remoteRow,
+          syncStatus: 1,
+          remoteId: remoteId,
+        );
+        await _preserveRicherTherapyTimeline(db, existing, update);
         await db.update(
           'sessions',
-          {
-            'duration_sec': remoteRow['duration_sec'],
-            'wrong_count': remoteRow['wrong_count'],
-            'wrong_dur_sec': remoteRow['wrong_dur_sec'],
-            'therapy_pattern': remoteRow['therapy_pattern'],
-            'ts_synced': (remoteRow['ts_synced'] == true) ? 1 : 0,
-            'posture_events': _encodeJson(remoteRow['posture_events']),
-            'therapy_patterns': _encodeJson(remoteRow['therapy_patterns']),
-            'therapy_pattern_events': _encodeJson(
-              remoteRow['therapy_pattern_events'],
-            ),
-            'sync_status': 1,
-            'remote_id': remoteId,
-          },
+          update,
           where: 'id = ?',
           whereArgs: [existing],
         );
@@ -365,6 +349,81 @@ class SessionDatabase {
       }
     }
     return result;
+  }
+
+  Map<String, dynamic> _remoteUpdate(
+    Map<String, dynamic> remoteRow, {
+    required int syncStatus,
+    String? remoteId,
+  }) {
+    return {
+      'duration_sec': remoteRow['duration_sec'],
+      'wrong_count': remoteRow['wrong_count'],
+      'wrong_dur_sec': remoteRow['wrong_dur_sec'],
+      'therapy_pattern': remoteRow['therapy_pattern'],
+      'ts_synced': (remoteRow['ts_synced'] == true) ? 1 : 0,
+      'posture_events': _encodeJson(remoteRow['posture_events']),
+      'therapy_patterns': _encodeJson(remoteRow['therapy_patterns']),
+      'therapy_pattern_events': _encodeJson(
+        remoteRow['therapy_pattern_events'],
+      ),
+      'sync_status': syncStatus,
+      if (remoteId != null) 'remote_id': remoteId,
+    };
+  }
+
+  Future<void> _preserveRicherTherapyTimeline(
+    Database db,
+    String id,
+    Map<String, dynamic> update,
+  ) async {
+    if (!update.containsKey('therapy_patterns') &&
+        !update.containsKey('therapy_pattern_events')) {
+      return;
+    }
+
+    final existingRows = await db.query(
+      'sessions',
+      columns: ['therapy_patterns', 'therapy_pattern_events'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (existingRows.isEmpty) return;
+
+    final existing = existingRows.first;
+    final existingPatternCount = _jsonListLength(existing['therapy_patterns']);
+    final existingEventCount = _jsonListLength(
+      existing['therapy_pattern_events'],
+    );
+    final incomingPatternCount = _jsonListLength(update['therapy_patterns']);
+    final incomingEventCount = _jsonListLength(
+      update['therapy_pattern_events'],
+    );
+    final existingTimelineCount = max(existingPatternCount, existingEventCount);
+    final incomingTimelineCount = max(incomingPatternCount, incomingEventCount);
+
+    if (existingTimelineCount <= incomingTimelineCount) return;
+
+    if (update.containsKey('therapy_patterns')) {
+      update['therapy_patterns'] = existing['therapy_patterns'];
+    }
+    if (update.containsKey('therapy_pattern_events')) {
+      update['therapy_pattern_events'] = existing['therapy_pattern_events'];
+    }
+  }
+
+  int _jsonListLength(dynamic value) {
+    if (value is List) return value.length;
+    if (value is String && value.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(value);
+        if (decoded is List) return decoded.length;
+      } catch (_) {
+        return 0;
+      }
+    }
+    return 0;
   }
 
   Future<bool> hasDataForUser(String userId) async {

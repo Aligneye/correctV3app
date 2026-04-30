@@ -63,6 +63,16 @@ String therapyPatternDescription(int patternIndex) {
   return 'Pattern details were not captured for this session.';
 }
 
+int? therapyPatternIndexFromDeviceNumber(int rawPattern) {
+  if (rawPattern >= 0 && rawPattern < kTherapyPatternNames.length) {
+    return rawPattern;
+  }
+  if (rawPattern >= 1 && rawPattern <= kTherapyPatternNames.length) {
+    return rawPattern - 1;
+  }
+  return null;
+}
+
 int? therapyPatternIndexFromName(String rawPattern) {
   final normalized = rawPattern.trim().toLowerCase();
   if (normalized.isEmpty) return null;
