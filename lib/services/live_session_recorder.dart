@@ -41,11 +41,7 @@ class LiveSessionRecorder {
   // therapy; posture sessions ignore it.
   _TherapyLaunchContext? _pendingTherapyContext;
 
-  // Cadence the recorder persists to SQLite during an active session. Short
-  // enough that the UI feels live (duration counter and pattern history
-  // update several times per firmware pattern advance) but long enough to
-  // avoid write amplification on the phone's flash.
-  static const Duration _updateInterval = Duration(milliseconds: 1500);
+  static const Duration _updateInterval = Duration(seconds: 5);
   static const Duration _minimumSessionDuration = Duration(seconds: 30);
 
   void start() {
@@ -481,10 +477,6 @@ class LiveSessionRecorder {
         _lastUpdateAt = now;
         _onSessionChanged?.call();
       } while (_dirtyWhileWriting);
-      // Kick the Supabase push after every local persist. The sync service
-      // debounces internally (500 ms) so rapid updates coalesce into one
-      // network round-trip.
-      SessionSyncService.instance.triggerSync();
     } catch (e) {
       debugPrint('LiveSessionRecorder: failed to update session: $e');
     } finally {

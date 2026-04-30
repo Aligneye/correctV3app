@@ -81,39 +81,16 @@ class DeviceManager {
     }
   }
 
-  Timer? _tickThrottle;
-  bool _tickPending = false;
-  // We only want to re-run BLE sync when a session actually *ends* on the
-  // device (firmware writes it to flash then). For in-progress updates,
-  // ticking is enough — pages refresh from local SQLite.
-  String? _prevActiveSessionId;
-
   void _onLiveSessionChanged() {
-    final currentActiveId = activeSessionId.value;
-    final sessionJustEnded = _prevActiveSessionId != null && currentActiveId == null;
-    _prevActiveSessionId = currentActiveId;
+    syncCompletedTick.value++;
+    debugPrint('DeviceManager: live session changed, tick=${syncCompletedTick.value}');
 
-    // Throttle the UI tick so the 1.5 s recorder cadence doesn't wake every
-    // listening page on every write. Pages still see a refresh within
-    // ~500 ms, which feels live without causing query thrash.
-    _tickPending = true;
-    _tickThrottle ??= Timer(const Duration(milliseconds: 500), () {
-      _tickThrottle = null;
-      if (!_tickPending) return;
-      _tickPending = false;
-      syncCompletedTick.value++;
-      debugPrint(
-        'DeviceManager: live session tick → ${syncCompletedTick.value}',
-      );
-    });
-
-    // Only pull from the device's flash when a session has *just ended*.
-    // During an in-progress session the phone is already the source of
-    // truth for the row, and running BLE sync every 1.5 s would thrash the
-    // link and corrupt the live stream.
-    if (sessionJustEnded &&
-        _btManager.deviceService.connectionStatus.value ==
-            DeviceConnectionStatus.connected) {
+    // When a live session ends (mode switches from TRAINING/THERAPY to
+    // something else), the firmware stores the completed session to flash.
+    // Re-run sync so the app picks it up immediately instead of waiting
+    // for the next BLE reconnect.
+    if (_btManager.deviceService.connectionStatus.value ==
+        DeviceConnectionStatus.connected) {
       _scheduleResync();
     }
   }
@@ -125,7 +102,7 @@ class DeviceManager {
     _resyncTimer = Timer(const Duration(seconds: 2), () {
       if (_btManager.deviceService.connectionStatus.value ==
           DeviceConnectionStatus.connected) {
-        debugPrint('DeviceManager: re-syncing after live session ended');
+        debugPrint('DeviceManager: re-syncing after live session change');
         unawaited(_startSync());
       }
     });
@@ -229,8 +206,6 @@ class DeviceManager {
       );
       _wired = false;
     }
-    _tickThrottle?.cancel();
-    _tickThrottle = null;
     await _teardownSync();
     await _liveSessionRecorder?.dispose();
     _liveSessionRecorder = null;
